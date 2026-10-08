@@ -1,0 +1,57 @@
+{% extends "base.html" %}
+{% block title %}Stats{% endblock %}
+{% block content %}
+
+<h1>Stats</h1>
+
+<div class="stats-summary">
+    <div class="stat-box">
+        <div class="stat-number">{{ total_visits }}</div>
+        <div class="stat-label">Total page views</div>
+    </div>
+    <div class="stat-box">
+        <div class="stat-number">{{ total_images }}</div>
+        <div class="stat-label">Total photos</div>
+    </div>
+    <div class="stat-box">
+        <div class="stat-number">{{ total_comments }}</div>
+        <div class="stat-label">Total comments</div>
+    </div>
+</div>
+
+<h2>Categories</h2>
+<table class="stats-table">
+    <thead>
+        <tr><th>Category</th><th>Photos</th><th>Views</th></tr>
+    </thead>
+    <tbody>
+        {% for cat in per_category %}
+        <tr>
+            <td>{{ cat.emoji }} {{ cat.label }}</td>
+            <td>{{ cat.count }}</td>
+            <td>{{ cat.views }}</td>
+        </tr>
+        {% endfor %}
+    </tbody>
+</table>
+
+<h2>Most viewed photos</h2>
+{% if top_images %}
+<table class="stats-table">
+    <thead>
+        <tr><th>Photo</th><th>Views</th></tr>
+    </thead>
+    <tbody>
+        {% for image in top_images %}
+        <tr>
+            <td><a href="{{ url_for('image_detail', image_id=image['id']) }}">{{ image['title'] }}</a></td>
+            <td>{{ image['views'] }}</td>
+        </tr>
+        {% endfor %}
+    </tbody>
+</table>
+{% else %}
+<p class="hint">No photos yet.</p>
+{% endif %}
+
+{% endblock %}

@@ -1,0 +1,49 @@
+{% extends "base.html" %}
+{% block title %}{{ album['name'] }}{% endblock %}
+{% block content %}
+
+<p><a href="{{ url_for('albums_list') }}">&laquo; All albums</a></p>
+
+<h1>📁 {{ album['name'] }}</h1>
+<p class="result-count">{{ images|length }} photo{{ 's' if images|length != 1 else '' }}</p>
+
+{% if session.get('logged_in') %}
+<div class="album-manage">
+    <form class="inline-form" method="post" action="{{ url_for('rename_album', album_id=album['id']) }}">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        <input type="text" name="name" value="{{ album['name'] }}" required>
+        <button type="submit">Rename</button>
+    </form>
+    <form method="post" action="{{ url_for('delete_album', album_id=album['id']) }}"
+          onsubmit="return confirm('Delete this album? Photos will be kept, just unassigned.');">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        <button type="submit" class="danger">Delete album</button>
+    </form>
+</div>
+{% endif %}
+
+{% if images %}
+<div class="grid">
+    {% for image in images %}
+    <a class="card" href="{{ url_for('image_detail', image_id=image['id'], album=album['id']) }}">
+        <img src="{{ thumb_url(image['thumbnail'], image['filename']) }}" alt="{{ image['title'] }}" loading="lazy">
+        <div class="card-body">
+            <div class="card-title">{{ image['title'] }}</div>
+            {% if image['tags'] %}
+            <div class="tags">
+                {% for tag in image['tags'].split(',') %}
+                    <span class="tag">{{ tag.strip() }}</span>
+                {% endfor %}
+            </div>
+            {% endif %}
+        </div>
+    </a>
+    {% endfor %}
+</div>
+{% else %}
+<div class="empty-state">
+    <p>No photos in this album yet.</p>
+</div>
+{% endif %}
+
+{% endblock %}

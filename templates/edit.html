@@ -1,0 +1,54 @@
+{% extends "base.html" %}
+{% block title %}Edit photo{% endblock %}
+{% block content %}
+
+<h1>Edit photo</h1>
+
+<div class="current-photo">
+    <img src="{{ thumb_url(image['thumbnail'], image['filename']) }}" alt="{{ image['title'] }}">
+    <p class="hint">Current photo. Only choose a new file below if you want to replace it.</p>
+</div>
+
+<form class="upload-form" method="post" enctype="multipart/form-data">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <label for="category">Category</label>
+    <select id="category" name="category" required>
+        {% for cat in categories %}
+            <option value="{{ cat.slug }}" {% if image['category'] == cat.slug %}selected{% endif %}>{{ cat.emoji }} {{ cat.label }}</option>
+        {% endfor %}
+    </select>
+
+    <label for="title">Title</label>
+    <input type="text" id="title" name="title" value="{{ image['title'] }}" required>
+
+    <label for="caption">Caption (optional)</label>
+    <textarea id="caption" name="caption" rows="2">{{ image['caption'] }}</textarea>
+
+    <label for="tags">Tags (comma separated)</label>
+    <input type="text" id="tags" name="tags" value="{{ image['tags'] }}">
+    <p class="hint">
+        e.g. <code>bus, volvo, b10m, sweden, taken in norway</code>
+    </p>
+
+    <label for="album_id">Album</label>
+    <select id="album_id" name="album_id">
+        <option value="" {% if not image['album_id'] %}selected{% endif %}>No album</option>
+        {% for album in albums %}
+            <option value="{{ album['id'] }}" {% if image['album_id'] == album['id'] %}selected{% endif %}>{{ album['name'] }}</option>
+        {% endfor %}
+    </select>
+    <p class="hint">
+        Change this any time to move the photo to a different album.
+        <a href="{{ url_for('albums_list') }}">Manage albums</a>
+    </p>
+
+    <label for="photo">Replace photo file (optional)</label>
+    <input type="file" id="photo" name="photo" accept="image/png, image/jpeg, image/gif, image/webp">
+    <p class="hint">Leave this empty to keep the current photo and just update the text.</p>
+
+    <button type="submit">Save changes</button>
+</form>
+
+<p><a href="{{ url_for('image_detail', image_id=image['id']) }}">&laquo; Back to photo</a></p>
+
+{% endblock %}

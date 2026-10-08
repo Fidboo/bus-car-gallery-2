@@ -1,0 +1,82 @@
+{% extends "base.html" %}
+{% block title %}{{ category.label }}{% endblock %}
+{% block content %}
+
+<p><a href="{{ url_for('gallery') }}">&laquo; Home</a></p>
+<h1>{{ category.emoji }} {{ category.label }}</h1>
+
+<form class="search-bar" method="get" action="{{ url_for('category_view', slug=category.slug) }}">
+    <input
+        type="text"
+        name="q"
+        value="{{ query }}"
+        placeholder="Search e.g. &quot;toyota camry&quot; or &quot;greenland&quot;"
+        autofocus
+    >
+    <button type="submit">Search</button>
+    {% if query %}
+        <a class="clear-link" href="{{ url_for('category_view', slug=category.slug) }}">Clear</a>
+    {% endif %}
+</form>
+
+{% if tags %}
+<div class="chip-row">
+    {% for tag in tags %}
+        <a class="chip {{ 'chip-active' if query == tag }}" href="{{ url_for('category_view', slug=category.slug, q=tag) }}">{{ tag }}</a>
+    {% endfor %}
+</div>
+{% endif %}
+
+<p class="result-count">
+    {% if query %}
+        {{ total }} result{{ 's' if total != 1 else '' }} for "{{ query }}"
+    {% else %}
+        {{ total }} photo{{ 's' if total != 1 else '' }}
+    {% endif %}
+</p>
+
+{% if images %}
+<div class="grid">
+    {% for image in images %}
+    <a class="card" href="{{ url_for('image_detail', image_id=image['id'], cat=category.slug, q=query) }}">
+        <img src="{{ thumb_url(image['thumbnail'], image['filename']) }}" alt="{{ image['title'] }}" loading="lazy">
+        <div class="card-body">
+            <div class="card-title">{{ image['title'] }}</div>
+            {% if image['album_name'] %}
+                <div class="album-badge">📁 {{ image['album_name'] }}</div>
+            {% endif %}
+            {% if image['tags'] %}
+            <div class="tags">
+                {% for tag in image['tags'].split(',') %}
+                    <span class="tag">{{ tag.strip() }}</span>
+                {% endfor %}
+            </div>
+            {% endif %}
+        </div>
+    </a>
+    {% endfor %}
+</div>
+
+{% if total_pages > 1 %}
+<div class="pagination">
+    {% if page > 1 %}
+        <a href="{{ url_for('category_view', slug=category.slug, q=query, page=page-1) }}">&laquo; Previous</a>
+    {% endif %}
+    <span>Page {{ page }} of {{ total_pages }}</span>
+    {% if page < total_pages %}
+        <a href="{{ url_for('category_view', slug=category.slug, q=query, page=page+1) }}">Next &raquo;</a>
+    {% endif %}
+</div>
+{% endif %}
+
+{% else %}
+<div class="empty-state">
+    {% if query %}
+        <p>No photos match "{{ query }}". Try a different word, or fewer words.</p>
+    {% else %}
+        <p>No photos in this category yet.</p>
+    {% endif %}
+</div>
+{% endif %}
+
+{% endblock %}

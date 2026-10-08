@@ -1,0 +1,23 @@
+{% extends "base.html" %}
+{% block title %}Vehicle Gallery{% endblock %}
+{% block content %}
+
+<h1>Choose a category</h1>
+
+<div class="tile-grid">
+    {% for tile in tiles %}
+    <a class="tile" href="{{ url_for('category_view', slug=tile.slug) }}">
+        {% if tile.cover_thumb %}
+            <img src="{{ thumb_url(tile.cover_thumb, tile.cover_filename) }}" alt="{{ tile.label }}">
+        {% else %}
+            <div class="tile-placeholder">{{ tile.emoji }}</div>
+        {% endif %}
+        <div class="tile-body">
+            <div class="tile-label">{{ tile.emoji }} {{ tile.label }}</div>
+            <div class="tile-count">{{ tile.count }} photo{{ 's' if tile.count != 1 else '' }}</div>
+        </div>
+    </a>
+    {% endfor %}
+</div>
+
+{% endblock %}

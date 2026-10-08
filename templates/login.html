@@ -1,0 +1,13 @@
+{% extends "base.html" %}
+{% block title %}Log in{% endblock %}
+{% block content %}
+
+<h1>Log in to upload</h1>
+<form class="upload-form" method="post">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <label for="password">Password</label>
+    <input type="password" id="password" name="password" required autofocus>
+    <button type="submit">Log in</button>
+</form>
+
+{% endblock %}

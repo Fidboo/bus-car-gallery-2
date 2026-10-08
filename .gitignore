@@ -1,0 +1,8 @@
+venv/
+.venv/
+__pycache__/
+*.pyc
+.DS_Store
+.env
+# Photos and the database are NOT code - they live in R2 / on the server's disk.
+data/

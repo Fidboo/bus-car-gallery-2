@@ -1,0 +1,145 @@
+{% extends "base.html" %}
+{% block title %}{{ image['title'] }}{% endblock %}
+{% block content %}
+
+<p class="back-link">
+{% if album_param %}
+    <a href="{{ url_for('album_detail', album_id=album_param) }}">&laquo; Back to album</a>
+{% elif cat_param %}
+    <a href="{{ url_for('category_view', slug=cat_param, q=q_param) }}">&laquo; Back to {{ category_label }}</a>
+{% else %}
+    <a href="{{ url_for('gallery') }}">&laquo; Home</a>
+{% endif %}
+</p>
+
+<div class="detail">
+    <div class="detail-media">
+        <img
+            class="detail-img"
+            id="mainPhoto"
+            src="{{ media_url('uploads', image['filename']) }}"
+            alt="{{ image['title'] }}"
+            title="Click to view fullscreen"
+            onclick="openLightbox()"
+        >
+        <div class="detail-nav">
+            {% if prev_id %}
+                <a href="{{ url_for('image_detail', image_id=prev_id, cat=cat_param, q=q_param, album=album_param) }}">&laquo; Previous</a>
+            {% else %}
+                <span class="nav-disabled">&laquo; Previous</span>
+            {% endif %}
+            <span class="nav-position">{{ position }} / {{ total_in_context }}</span>
+            {% if next_id %}
+                <a href="{{ url_for('image_detail', image_id=next_id, cat=cat_param, q=q_param, album=album_param) }}">Next &raquo;</a>
+            {% else %}
+                <span class="nav-disabled">Next &raquo;</span>
+            {% endif %}
+        </div>
+    </div>
+
+    <div class="detail-info">
+        <h1>{{ image['title'] }}</h1>
+        {% if image['caption'] %}
+            <p class="caption">{{ image['caption'] }}</p>
+        {% endif %}
+
+        {% if image['album_name'] %}
+            <p class="album-link">📁 <a href="{{ url_for('album_detail', album_id=image['album_id']) }}">{{ image['album_name'] }}</a></p>
+        {% endif %}
+
+        {% if image['tags'] %}
+        <div class="tags">
+            {% for tag in image['tags'].split(',') %}
+                <a class="tag" href="{{ url_for('category_view', slug=image['category'], q=tag.strip()) }}">{{ tag.strip() }}</a>
+            {% endfor %}
+        </div>
+        {% endif %}
+
+        <p class="meta">
+            {% if image['photo_taken_date'] %}
+                📅 Taken: {{ image['photo_taken_date']|fmtdate }}
+            {% else %}
+                📅 Uploaded: {{ image['uploaded_at']|fmtdate }}
+            {% endif %}
+        </p>
+
+        <div class="download-box">
+            <a class="button-link" href="{{ url_for('download_image', image_id=image['id']) }}">⬇ Download photo</a>
+            <p class="hint">This photo may be downloaded for personal use, but must not be used on social media or elsewhere without permission.</p>
+        </div>
+
+        {% if session.get('logged_in') %}
+        <div class="detail-actions">
+            <a class="button-link" href="{{ url_for('edit_image', image_id=image['id']) }}">Edit</a>
+            <form method="post" action="{{ url_for('delete_image', image_id=image['id']) }}"
+                  onsubmit="return confirm('Delete this photo? This cannot be undone.');">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                <button type="submit" class="danger">Delete photo</button>
+            </form>
+        </div>
+        {% endif %}
+    </div>
+</div>
+
+<div id="lightbox" class="lightbox" onclick="closeLightbox()">
+    <span class="lightbox-close" onclick="closeLightbox()">&times;</span>
+    <img id="lightboxImg" src="" alt="">
+</div>
+
+<script>
+function openLightbox() {
+    var mainImg = document.getElementById('mainPhoto');
+    var lightbox = document.getElementById('lightbox');
+    var lightboxImg = document.getElementById('lightboxImg');
+    lightboxImg.src = mainImg.src;
+    lightboxImg.alt = mainImg.alt;
+    lightbox.classList.add('active');
+    document.body.style.overflow = 'hidden';
+}
+function closeLightbox() {
+    document.getElementById('lightbox').classList.remove('active');
+    document.body.style.overflow = '';
+}
+document.addEventListener('keydown', function (e) {
+    if (e.key === 'Escape') closeLightbox();
+});
+</script>
+
+<section id="comments" class="comments-section">
+    <h2>Comments ({{ comments|length }})</h2>
+
+    {% for c in comments %}
+        <div class="comment">
+            <div class="comment-name">{{ c['name'] }}</div>
+            <div class="comment-text">{{ c['comment'] }}</div>
+            <div class="comment-date">{{ c['created_at']|fmtdate }}</div>
+            {% if session.get('logged_in') %}
+            <form method="post" action="{{ url_for('delete_comment', comment_id=c['id']) }}"
+                  onsubmit="return confirm('Delete this comment?');">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                <button type="submit" class="danger">Delete comment</button>
+            </form>
+            {% endif %}
+        </div>
+    {% else %}
+        <p class="hint">No comments yet. Be the first to write one!</p>
+    {% endfor %}
+
+    <form class="comment-form" method="post" action="{{ url_for('add_comment', image_id=image['id']) }}">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        <input type="text" name="website" class="honeypot" tabindex="-1" autocomplete="off">
+        <input type="hidden" name="cat" value="{{ cat_param or '' }}">
+        <input type="hidden" name="q" value="{{ q_param or '' }}">
+        <input type="hidden" name="album" value="{{ album_param or '' }}">
+
+        <label for="name">Name</label>
+        <input type="text" id="name" name="name" placeholder="Your name (optional)">
+
+        <label for="comment">Comment</label>
+        <textarea id="comment" name="comment" rows="3" required></textarea>
+
+        <button type="submit">Post comment</button>
+    </form>
+</section>
+
+{% endblock %}

@@ -1,0 +1,519 @@
+{% extends "base.html" %}
+{% block title %}Upload photos{% endblock %}
+{% block main_class %}container-wide{% endblock %}
+{% block content %}
+
+<div class="organizer" id="organizer">
+
+    <div class="o-toolbar">
+        <button type="button" class="o-tool" id="btnAdd">＋ Add</button>
+        <button type="button" class="o-tool" id="btnRemove">✕ Remove</button>
+        <button type="button" class="o-tool" id="btnAll">✓ All</button>
+        <span class="o-toolbar-info" id="countInfo"></span>
+        <button type="button" class="o-upload" id="btnUpload" disabled>Upload</button>
+    </div>
+
+    <div id="banner" class="o-banner" hidden></div>
+
+    <div class="o-body">
+        <aside class="o-sidebar" id="sidebar">
+            <div class="o-side-head" id="sideHead">Select photos to edit</div>
+
+            <div class="o-side-section">
+                <label for="fCategory">Category <span class="o-req">required</span></label>
+                <select id="fCategory"></select>
+            </div>
+
+            <div class="o-side-section">
+                <label for="fTitle">Titles</label>
+                <textarea id="fTitle" rows="2" placeholder="Add a title"></textarea>
+            </div>
+
+            <div class="o-side-section">
+                <label for="fCaption">Caption</label>
+                <textarea id="fCaption" rows="3" placeholder="Add a description"></textarea>
+            </div>
+
+            <div class="o-side-section">
+                <label for="fTags">Tags</label>
+                <div class="o-tag-add">
+                    <input type="text" id="fTags" placeholder="Add tags, e.g. volvo, b10m, sweden">
+                    <button type="button" id="btnAddTags">Add</button>
+                </div>
+                <div class="o-chips" id="chips"></div>
+            </div>
+
+            <div class="o-side-section">
+                <label for="fAlbum">Album</label>
+                <select id="fAlbum"></select>
+            </div>
+
+            <p class="o-side-note">Changes apply to every selected photo.<br>
+            Click a photo's name to rename it.</p>
+        </aside>
+
+        <section class="o-main" id="dropZone">
+            <div class="o-empty" id="emptyState">
+                <div class="o-empty-icon">📷</div>
+                <p>Drag photos here, or</p>
+                <button type="button" class="o-upload" id="btnPick">Choose photos</button>
+                <p class="o-empty-hint">JPG, PNG, GIF or WEBP · select as many as you like</p>
+            </div>
+            <div class="o-grid" id="grid"></div>
+        </section>
+    </div>
+
+    <input type="file" id="fileInput" accept="image/jpeg,image/png,image/gif,image/webp" multiple hidden>
+</div>
+
+<script>
+(function () {
+    var CATEGORIES = {{ categories_json|tojson }};
+    var ALBUMS = {{ albums_json|tojson }};
+    var CSRF_TOKEN = {{ csrf_token()|tojson }};
+    var ALLOWED = ['jpg', 'jpeg', 'png', 'gif', 'webp'];
+    var MIXED = '__mixed__';
+    var NEW_ALBUM = '__new__';
+
+    var photos = [];            // {id, file, url, title, category, caption, tags[], albumId, status, progress, error, flag}
+    var selected = new Set();   // selected photo ids
+    var lastIdx = null;
+    var uploading = false;
+    var nextId = 1;
+    var tiles = new Map();      // photo id -> {root, thumb, titleEl, sub, bar, msg}
+    var doneByCategory = {};
+
+    function $(id) { return document.getElementById(id); }
+    var grid = $('grid'), fileInput = $('fileInput'), emptyState = $('emptyState');
+    var fCategory = $('fCategory'), fTitle = $('fTitle'), fCaption = $('fCaption'), fTags = $('fTags'), fAlbum = $('fAlbum');
+    var chips = $('chips'), banner = $('banner'), btnUpload = $('btnUpload');
+
+    // ---------- helpers ----------
+    function baseName(name) { return name.replace(/\.[^.]+$/, ''); }
+    function catLabel(slug) {
+        for (var i = 0; i < CATEGORIES.length; i++) if (CATEGORIES[i].slug === slug) return CATEGORIES[i].label;
+        return '';
+    }
+    function selectedPhotos() { return photos.filter(function (p) { return selected.has(p.id); }); }
+    function editable(p) { return p.status === 'pending' || p.status === 'error'; }
+    function pendingPhotos() { return photos.filter(editable); }
+    function el(tag, cls, text) {
+        var e = document.createElement(tag);
+        if (cls) e.className = cls;
+        if (text !== undefined) e.textContent = text;
+        return e;
+    }
+    function showBanner(kind, nodeOrText) {
+        banner.className = 'o-banner o-banner-' + kind;
+        banner.textContent = '';
+        if (typeof nodeOrText === 'string') banner.textContent = nodeOrText; else banner.appendChild(nodeOrText);
+        banner.hidden = false;
+    }
+    function hideBanner() { banner.hidden = true; }
+
+    // ---------- adding files ----------
+    function addFiles(fileList) {
+        var added = [], skipped = 0;
+        Array.prototype.forEach.call(fileList, function (file) {
+            var ext = (file.name.split('.').pop() || '').toLowerCase();
+            if (ALLOWED.indexOf(ext) === -1) { skipped++; return; }
+            var p = {
+                id: nextId++, file: file, url: URL.createObjectURL(file),
+                title: baseName(file.name), category: '', caption: '', tags: [], albumId: '',
+                status: 'pending', progress: 0, error: '', flag: false
+            };
+            photos.push(p);
+            added.push(p);
+            createTile(p);
+        });
+        if (added.length) {
+            selected = new Set(added.map(function (p) { return p.id; }));   // new batch is selected, ready to categorise
+            lastIdx = null;
+        }
+        if (skipped) showBanner('warn', skipped + ' file(s) skipped: only JPG, PNG, GIF and WEBP are supported.');
+        else if (added.length) hideBanner();
+        refreshAll();
+    }
+
+    // ---------- tiles ----------
+    function createTile(p) {
+        var root = el('div', 'o-tile');
+        var thumb = el('div', 'o-thumb');
+        var img = el('img'); img.src = p.url; img.alt = ''; img.draggable = false;
+        var check = el('div', 'o-check', '✓');
+        var overlay = el('div', 'o-overlay');
+        var barWrap = el('div', 'o-bar'); var bar = el('span'); barWrap.appendChild(bar);
+        var msg = el('div', 'o-msg');
+        overlay.appendChild(barWrap); overlay.appendChild(msg);
+        thumb.appendChild(img); thumb.appendChild(check); thumb.appendChild(overlay);
+        var titleEl = el('div', 'o-title', p.title);
+        titleEl.title = 'Click to rename';
+        var descEl = el('div', 'o-desc');
+        descEl.title = 'Click to add a description';
+        var sub = el('div', 'o-sub');
+        root.appendChild(thumb); root.appendChild(titleEl); root.appendChild(descEl); root.appendChild(sub);
+        grid.appendChild(root);
+
+        root.addEventListener('click', function (e) { handleSelect(p, e); });
+        check.addEventListener('click', function (e) { e.stopPropagation(); toggle(p); refreshAll(); });
+        titleEl.addEventListener('click', function (e) { e.stopPropagation(); startRename(p, titleEl); });
+        descEl.addEventListener('click', function (e) { e.stopPropagation(); startDescEdit(p, descEl); });
+
+        tiles.set(p.id, { root: root, titleEl: titleEl, descEl: descEl, sub: sub, bar: bar, msg: msg });
+    }
+
+    function updateTile(p) {
+        var t = tiles.get(p.id); if (!t) return;
+        t.root.classList.toggle('selected', selected.has(p.id));
+        t.root.classList.toggle('uploading', p.status === 'uploading');
+        t.root.classList.toggle('done', p.status === 'done');
+        t.root.classList.toggle('failed', p.status === 'error');
+        t.root.classList.toggle('flagged', p.flag && !p.category && editable(p));
+        if (t.titleEl.tagName === 'DIV') t.titleEl.textContent = p.title;
+        if (t.descEl.tagName === 'DIV') {
+            t.descEl.textContent = p.caption.trim() ? p.caption : 'Add a description';
+            t.descEl.classList.toggle('o-desc-empty', !p.caption.trim());
+            t.descEl.title = p.caption.trim() ? p.caption : 'Click to add a description';
+        }
+        t.bar.style.width = (p.status === 'done' ? 100 : p.progress) + '%';
+        t.msg.textContent = p.status === 'done' ? '✓ Uploaded' : (p.status === 'error' ? p.error : (p.status === 'uploading' ? p.progress + '%' : ''));
+
+        var bits = [];
+        if (p.status === 'done') { t.sub.textContent = catLabel(p.category); t.sub.className = 'o-sub'; return; }
+        if (p.category) bits.push(catLabel(p.category)); else bits.push('⚠ Needs category');
+        if (p.tags.length) bits.push(p.tags.length + ' tag' + (p.tags.length === 1 ? '' : 's'));
+        t.sub.textContent = bits.join(' · ');
+        t.sub.className = 'o-sub' + (p.category ? '' : ' o-sub-warn');
+    }
+
+    function startRename(p, titleEl) {
+        if (!editable(p) || uploading) return;
+        var input = el('input', 'o-title-input');
+        input.type = 'text'; input.value = p.title; input.maxLength = 200;
+        titleEl.replaceWith(input);
+        input.focus(); input.select();
+        var finished = false;
+        function finish(save) {
+            if (finished) return; finished = true;
+            if (save) p.title = input.value.trim() || baseName(p.file.name);
+            input.replaceWith(titleEl);
+            titleEl.textContent = p.title;
+            if (selected.has(p.id)) populateSidebar();
+        }
+        input.addEventListener('click', function (e) { e.stopPropagation(); });
+        input.addEventListener('keydown', function (e) {
+            if (e.key === 'Enter') { e.preventDefault(); finish(true); }
+            else if (e.key === 'Escape') { finish(false); }
+        });
+        input.addEventListener('blur', function () { finish(true); });
+    }
+
+    function startDescEdit(p, descEl) {
+        if (!editable(p) || uploading) return;
+        var input = el('input', 'o-desc-input');
+        input.type = 'text'; input.value = p.caption; input.maxLength = 2000;
+        input.placeholder = 'Add a description';
+        descEl.replaceWith(input);
+        input.focus(); input.select();
+        var finished = false;
+        function finish(save) {
+            if (finished) return; finished = true;
+            if (save) p.caption = input.value.trim();
+            input.replaceWith(descEl);
+            updateTile(p);
+            if (selected.has(p.id)) populateSidebar();   // keep the sidebar in sync
+        }
+        input.addEventListener('click', function (e) { e.stopPropagation(); });
+        input.addEventListener('keydown', function (e) {
+            if (e.key === 'Enter') { e.preventDefault(); finish(true); }
+            else if (e.key === 'Escape') { finish(false); }
+        });
+        input.addEventListener('blur', function () { finish(true); });
+    }
+
+    // ---------- selection ----------
+    function toggle(p) {
+        if (!editable(p)) return;
+        if (selected.has(p.id)) selected.delete(p.id); else selected.add(p.id);
+    }
+    function handleSelect(p, e) {
+        if (!editable(p) || uploading) return;
+        var idx = photos.indexOf(p);
+        if (e.shiftKey && lastIdx !== null) {
+            var a = Math.min(lastIdx, idx), b = Math.max(lastIdx, idx);
+            if (!(e.ctrlKey || e.metaKey)) selected = new Set();
+            for (var i = a; i <= b; i++) if (editable(photos[i])) selected.add(photos[i].id);
+        } else if (e.ctrlKey || e.metaKey) {
+            toggle(p); lastIdx = idx;
+        } else {
+            selected = new Set([p.id]); lastIdx = idx;
+        }
+        refreshAll();
+    }
+
+    // ---------- sidebar ----------
+    function buildSelects() {
+        fCategory.textContent = '';
+        var ph = el('option', '', 'Choose a category…'); ph.value = ''; fCategory.appendChild(ph);
+        CATEGORIES.forEach(function (c) { var o = el('option', '', c.emoji + ' ' + c.label); o.value = c.slug; fCategory.appendChild(o); });
+        var m = el('option', '', 'Mixed'); m.value = MIXED; m.hidden = true; m.disabled = true; fCategory.appendChild(m);
+        buildAlbumSelect();
+    }
+    function buildAlbumSelect() {
+        fAlbum.textContent = '';
+        var none = el('option', '', 'No album'); none.value = ''; fAlbum.appendChild(none);
+        ALBUMS.forEach(function (a) { var o = el('option', '', a.name); o.value = String(a.id); fAlbum.appendChild(o); });
+        var nw = el('option', '', '＋ Create new album…'); nw.value = NEW_ALBUM; fAlbum.appendChild(nw);
+        var m = el('option', '', 'Mixed'); m.value = MIXED; m.hidden = true; m.disabled = true; fAlbum.appendChild(m);
+    }
+    function commonValue(list, fn) {
+        var v = fn(list[0]);
+        for (var i = 1; i < list.length; i++) if (fn(list[i]) !== v) return { mixed: true };
+        return { mixed: false, value: v };
+    }
+    function populateSidebar() {
+        var sel = selectedPhotos();
+        var n = sel.length;
+        $('sideHead').textContent = n === 0 ? 'Select photos to edit' : 'Editing ' + n + ' photo' + (n === 1 ? '' : 's') + ':';
+        var disabled = n === 0 || uploading;
+        [fCategory, fTitle, fCaption, fTags, fAlbum, $('btnAddTags')].forEach(function (c) { c.disabled = disabled; });
+        if (n === 0) { fCategory.value = ''; fTitle.value = ''; fTitle.placeholder = 'Add a title'; fCaption.value = ''; fCaption.placeholder = 'Add a description'; fAlbum.value = ''; chips.textContent = ''; return; }
+
+        var c = commonValue(sel, function (p) { return p.category; });
+        fCategory.value = c.mixed ? MIXED : c.value;
+        var ttl = commonValue(sel, function (p) { return p.title; });
+        fTitle.value = ttl.mixed ? '' : ttl.value;
+        fTitle.placeholder = ttl.mixed ? 'Mixed – typing replaces all' : 'Add a title';
+        var cap = commonValue(sel, function (p) { return p.caption; });
+        fCaption.value = cap.mixed ? '' : cap.value;
+        fCaption.placeholder = cap.mixed ? 'Mixed – typing replaces all' : 'Add a description';
+        var al = commonValue(sel, function (p) { return p.albumId; });
+        fAlbum.value = al.mixed ? MIXED : al.value;
+        renderChips();
+    }
+    function renderChips() {
+        chips.textContent = '';
+        var sel = selectedPhotos(), counts = {}, order = [];
+        sel.forEach(function (p) { p.tags.forEach(function (t) { if (!(t in counts)) { counts[t] = 0; order.push(t); } counts[t]++; }); });
+        order.sort().forEach(function (t) {
+            var chip = el('span', 'o-chip' + (counts[t] < sel.length ? ' o-chip-partial' : ''));
+            chip.title = counts[t] < sel.length ? 'On ' + counts[t] + ' of ' + sel.length + ' selected photos' : '';
+            chip.appendChild(el('span', '', t));
+            var x = el('button', '', '×'); x.type = 'button'; x.title = 'Remove tag from selected photos';
+            x.addEventListener('click', function () {
+                selectedPhotos().forEach(function (p) { p.tags = p.tags.filter(function (v) { return v !== t; }); updateTile(p); });
+                renderChips();
+            });
+            chip.appendChild(x);
+            chips.appendChild(chip);
+        });
+    }
+    function addTagsFromInput() {
+        var parts = fTags.value.split(/[,;]/).map(function (t) { return t.trim().toLowerCase(); }).filter(Boolean);
+        if (!parts.length) return;
+        selectedPhotos().forEach(function (p) {
+            parts.forEach(function (t) { if (p.tags.indexOf(t) === -1) p.tags.push(t); });
+            updateTile(p);
+        });
+        fTags.value = '';
+        renderChips();
+    }
+
+    fCategory.addEventListener('change', function () {
+        if (fCategory.value === MIXED) return;
+        selectedPhotos().forEach(function (p) { p.category = fCategory.value; updateTile(p); });
+        refreshUploadButton();
+    });
+    fTitle.addEventListener('keydown', function (e) { if (e.key === 'Enter') e.preventDefault(); });   // titles are one line
+    fTitle.addEventListener('input', function () {
+        var v = fTitle.value.replace(/[\r\n]+/g, ' ');
+        selectedPhotos().forEach(function (p) { p.title = v.trim() ? v : baseName(p.file.name); updateTile(p); });
+    });
+    fCaption.addEventListener('input', function () {
+        selectedPhotos().forEach(function (p) { p.caption = fCaption.value; updateTile(p); });
+    });
+    $('btnAddTags').addEventListener('click', addTagsFromInput);
+    fTags.addEventListener('keydown', function (e) { if (e.key === 'Enter') { e.preventDefault(); addTagsFromInput(); } });
+    fTags.addEventListener('blur', addTagsFromInput);
+
+    fAlbum.addEventListener('change', function () {
+        var v = fAlbum.value;
+        if (v === MIXED) return;
+        if (v === NEW_ALBUM) {
+            var name = window.prompt('Name for the new album:');
+            if (!name || !name.trim()) { populateSidebar(); return; }
+            var xhr = new XMLHttpRequest();
+            xhr.open('POST', '/api/albums');
+            xhr.setRequestHeader('X-CSRF-Token', CSRF_TOKEN);
+            xhr.setRequestHeader('Content-Type', 'application/json');
+            xhr.onload = function () {
+                var r = {}; try { r = JSON.parse(xhr.responseText); } catch (e) {}
+                if (xhr.status === 200 && r.ok) {
+                    if (!ALBUMS.some(function (a) { return a.id === r.id; })) ALBUMS.push({ id: r.id, name: r.name });
+                    ALBUMS.sort(function (a, b) { return a.name.toLowerCase() < b.name.toLowerCase() ? -1 : 1; });
+                    buildAlbumSelect();
+                    selectedPhotos().forEach(function (p) { p.albumId = String(r.id); });
+                    populateSidebar();
+                } else { showBanner('error', r.error || 'Could not create the album.'); populateSidebar(); }
+            };
+            xhr.onerror = function () { showBanner('error', 'Network error while creating the album.'); populateSidebar(); };
+            xhr.send(JSON.stringify({ name: name }));
+            return;
+        }
+        selectedPhotos().forEach(function (p) { p.albumId = v; });
+    });
+
+    // ---------- toolbar ----------
+    $('btnAdd').addEventListener('click', function () { if (!uploading) fileInput.click(); });
+    $('btnPick').addEventListener('click', function () { fileInput.click(); });
+    fileInput.addEventListener('change', function () { addFiles(fileInput.files); fileInput.value = ''; });
+
+    $('btnAll').addEventListener('click', function () {
+        if (uploading) return;
+        var all = pendingPhotos();
+        var allSelected = all.length > 0 && all.every(function (p) { return selected.has(p.id); });
+        selected = allSelected ? new Set() : new Set(all.map(function (p) { return p.id; }));
+        refreshAll();
+    });
+    $('btnRemove').addEventListener('click', function () {
+        if (uploading) return;
+        selectedPhotos().forEach(function (p) { removePhoto(p); });
+        selected = new Set(); lastIdx = null;
+        refreshAll();
+    });
+    function removePhoto(p) {
+        var t = tiles.get(p.id);
+        if (t) t.root.remove();
+        tiles.delete(p.id);
+        URL.revokeObjectURL(p.url);
+        photos.splice(photos.indexOf(p), 1);
+    }
+
+    // drag & drop
+    var dz = $('dropZone');
+    ['dragenter', 'dragover'].forEach(function (ev) {
+        dz.addEventListener(ev, function (e) { e.preventDefault(); dz.classList.add('dragging'); });
+    });
+    ['dragleave', 'drop'].forEach(function (ev) {
+        dz.addEventListener(ev, function (e) { e.preventDefault(); dz.classList.remove('dragging'); });
+    });
+    dz.addEventListener('drop', function (e) {
+        if (!uploading && e.dataTransfer && e.dataTransfer.files.length) addFiles(e.dataTransfer.files);
+    });
+
+    // ---------- refresh ----------
+    function refreshUploadButton() {
+        var n = pendingPhotos().length;
+        btnUpload.disabled = uploading || n === 0;
+        if (!uploading) btnUpload.textContent = n === 0 ? 'Upload' : 'Upload ' + n + ' Photo' + (n === 1 ? '' : 's');
+    }
+    function refreshAll() {
+        photos.forEach(updateTile);
+        emptyState.hidden = photos.length > 0;
+        grid.hidden = photos.length === 0;
+        $('countInfo').textContent = photos.length ? selected.size + ' of ' + pendingPhotos().length + ' selected' : '';
+        populateSidebar();
+        refreshUploadButton();
+    }
+
+    // ---------- upload ----------
+    function startUpload() {
+        var todo = pendingPhotos();
+        if (!todo.length || uploading) return;
+
+        var missing = todo.filter(function (p) { return !p.category; });
+        if (missing.length) {
+            missing.forEach(function (p) { p.flag = true; });
+            selected = new Set(missing.map(function (p) { return p.id; }));
+            refreshAll();
+            showBanner('error', missing.length + ' photo' + (missing.length === 1 ? ' needs' : 's need') +
+                ' a category. They are selected now: pick one on the left, then upload again.');
+            return;
+        }
+
+        hideBanner();
+        uploading = true;
+        selected = new Set();
+        todo.forEach(function (p) { p.status = 'pending'; p.progress = 0; p.error = ''; p.flag = false; });
+        refreshAll();
+
+        var i = 0, ok = 0, failed = 0;
+        (function next() {
+            if (i >= todo.length) { return finish(ok, failed); }
+            var p = todo[i++];
+            btnUpload.textContent = 'Uploading ' + i + ' of ' + todo.length + '…';
+            sendOne(p, function (success) {
+                if (success) { ok++; doneByCategory[p.category] = (doneByCategory[p.category] || 0) + 1; } else { failed++; }
+                next();
+            });
+        })();
+    }
+
+    function sendOne(p, cb) {
+        p.status = 'uploading'; p.progress = 0; updateTile(p);
+        var fd = new FormData();
+        fd.append('photo', p.file, p.file.name);
+        fd.append('title', p.title.trim());
+        fd.append('caption', p.caption);
+        fd.append('tags', p.tags.join(', '));
+        fd.append('category', p.category);
+        fd.append('album_id', p.albumId);
+
+        var xhr = new XMLHttpRequest();
+        xhr.open('POST', '/upload/file');
+        xhr.setRequestHeader('X-CSRF-Token', CSRF_TOKEN);
+        xhr.upload.onprogress = function (e) {
+            if (e.lengthComputable) { p.progress = Math.round(e.loaded / e.total * 100); updateTile(p); }
+        };
+        xhr.onload = function () {
+            var r = {}; try { r = JSON.parse(xhr.responseText); } catch (e) {}
+            if (xhr.status === 200 && r.ok) { p.status = 'done'; p.progress = 100; p.error = ''; updateTile(p); cb(true); }
+            else {
+                p.status = 'error';
+                p.error = r.error || (xhr.status === 413 ? 'File too large (max 50 MB).' : 'Upload failed (' + xhr.status + ').');
+                updateTile(p); cb(false);
+            }
+        };
+        xhr.onerror = function () { p.status = 'error'; p.error = 'Network error. Retry.'; updateTile(p); cb(false); };
+        xhr.send(fd);
+    }
+
+    function finish(ok, failed) {
+        uploading = false;
+        var box = el('div');
+        var line = el('strong', '', '✓ ' + ok + ' photo' + (ok === 1 ? '' : 's') + ' uploaded');
+        box.appendChild(line);
+        if (failed) box.appendChild(document.createTextNode('  ·  ' + failed + ' failed (marked in red, press Upload to retry)'));
+        var links = Object.keys(doneByCategory);
+        if (links.length) {
+            box.appendChild(document.createTextNode('  ·  View: '));
+            links.forEach(function (slug, idx) {
+                var a = el('a', '', catLabel(slug) + ' (' + doneByCategory[slug] + ')');
+                a.href = '/category/' + slug;
+                box.appendChild(a);
+                if (idx < links.length - 1) box.appendChild(document.createTextNode(', '));
+            });
+        }
+        var clear = el('button', 'o-link-btn', 'Clear finished'); clear.type = 'button';
+        clear.addEventListener('click', function () {
+            photos.filter(function (p) { return p.status === 'done'; }).forEach(removePhoto);
+            doneByCategory = {}; hideBanner(); refreshAll();
+        });
+        box.appendChild(document.createTextNode('  '));
+        box.appendChild(clear);
+        showBanner(failed ? 'warn' : 'ok', box);
+        refreshAll();
+    }
+
+    btnUpload.addEventListener('click', startUpload);
+
+    window.addEventListener('beforeunload', function (e) {
+        if (uploading || pendingPhotos().length) { e.preventDefault(); e.returnValue = ''; }
+    });
+
+    buildSelects();
+    refreshAll();
+})();
+</script>
+
+{% endblock %}

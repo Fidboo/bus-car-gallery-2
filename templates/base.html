@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>{% block title %}Vehicle Gallery{% endblock %}</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🚌</text></svg>">
+</head>
+<body>
+    <header class="site-header">
+        <div class="header-inner">
+            <a class="brand" href="{{ url_for('gallery') }}">🚌 Vehicle Gallery</a>
+            <nav>
+                <a href="{{ url_for('gallery') }}">Home</a>
+                <a href="{{ url_for('albums_list') }}">Albums</a>
+                {% if CONTACT_EMAIL %}
+                    <a href="mailto:{{ CONTACT_EMAIL }}">Contact</a>
+                {% endif %}
+                {% if session.get('logged_in') %}
+                    <a href="{{ url_for('upload') }}">Upload</a>
+                    <a href="{{ url_for('stats') }}">Stats</a>
+                    <a href="{{ url_for('logout') }}">Log out</a>
+                {% else %}
+                    <a href="{{ url_for('login') }}">Log in</a>
+                {% endif %}
+            </nav>
+        </div>
+    </header>
+
+    <main class="{% block main_class %}container{% endblock %}">
+        {% with messages = get_flashed_messages() %}
+            {% if messages %}
+                <div class="flash-messages">
+                    {% for message in messages %}
+                        <div class="flash">{{ message }}</div>
+                    {% endfor %}
+                </div>
+            {% endif %}
+        {% endwith %}
+
+        {% block content %}{% endblock %}
+    </main>
+
+    <footer class="site-footer">
+        <p>Vehicle Gallery</p>
+    </footer>
+</body>
+</html>

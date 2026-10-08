@@ -1,0 +1,39 @@
+{% extends "base.html" %}
+{% block title %}Albums{% endblock %}
+{% block content %}
+
+<h1>Albums</h1>
+
+{% if session.get('logged_in') %}
+<form class="inline-form" method="post" action="{{ url_for('create_album') }}">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <input type="text" name="name" placeholder="New album name, e.g. Norway Trip 2024" required>
+    <button type="submit">Create album</button>
+</form>
+{% endif %}
+
+{% if albums %}
+<div class="grid">
+    {% for album in albums %}
+    <a class="card" href="{{ url_for('album_detail', album_id=album['id']) }}">
+        {% if album['cover_thumb'] %}
+            <img src="{{ thumb_url(album['cover_thumb'], album['cover_filename']) }}" alt="{{ album['name'] }}" loading="lazy">
+        {% else %}
+            <div class="card-placeholder">📁</div>
+        {% endif %}
+        <div class="card-body">
+            <div class="card-title">{{ album['name'] }}</div>
+            <div class="album-count">{{ album['photo_count'] }} photo{{ 's' if album['photo_count'] != 1 else '' }}</div>
+        </div>
+    </a>
+    {% endfor %}
+</div>
+{% else %}
+<div class="empty-state">
+    <p>No albums yet.</p>
+</div>
+{% endif %}
+
+<p><a href="{{ url_for('gallery') }}">&laquo; Back to home</a></p>
+
+{% endblock %}

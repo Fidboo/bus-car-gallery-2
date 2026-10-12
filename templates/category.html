@@ -2,8 +2,8 @@
 {% block title %}{{ category.label }}{% endblock %}
 {% block content %}
 
-<p><a href="{{ url_for('gallery') }}">&laquo; Home</a></p>
-<h1>{{ category.emoji }} {{ category.label }}</h1>
+<p><a href="{{ url_for('gallery') }}">&larr; Home</a></p>
+<h1>{{ category.label }}</h1>
 
 <form class="search-bar" method="get" action="{{ url_for('category_view', slug=category.slug) }}">
     <input
@@ -43,7 +43,7 @@
         <div class="card-body">
             <div class="card-title">{{ image['title'] }}</div>
             {% if image['album_name'] %}
-                <div class="album-badge">📁 {{ image['album_name'] }}</div>
+                <div class="album-badge">{{ image['album_name'] }}</div>
             {% endif %}
             {% if image['tags'] %}
             <div class="tags">
@@ -60,11 +60,11 @@
 {% if total_pages > 1 %}
 <div class="pagination">
     {% if page > 1 %}
-        <a href="{{ url_for('category_view', slug=category.slug, q=query, page=page-1) }}">&laquo; Previous</a>
+        <a href="{{ url_for('category_view', slug=category.slug, q=query, page=page-1) }}">&larr; Previous</a>
     {% endif %}
     <span>Page {{ page }} of {{ total_pages }}</span>
     {% if page < total_pages %}
-        <a href="{{ url_for('category_view', slug=category.slug, q=query, page=page+1) }}">Next &raquo;</a>
+        <a href="{{ url_for('category_view', slug=category.slug, q=query, page=page+1) }}">Next &rarr;</a>
     {% endif %}
 </div>
 {% endif %}

@@ -4,11 +4,11 @@
 
 <p class="back-link">
 {% if album_param %}
-    <a href="{{ url_for('album_detail', album_id=album_param) }}">&laquo; Back to album</a>
+    <a href="{{ url_for('album_detail', album_id=album_param) }}">&larr; Back to album</a>
 {% elif cat_param %}
-    <a href="{{ url_for('category_view', slug=cat_param, q=q_param) }}">&laquo; Back to {{ category_label }}</a>
+    <a href="{{ url_for('category_view', slug=cat_param, q=q_param) }}">&larr; Back to {{ category_label }}</a>
 {% else %}
-    <a href="{{ url_for('gallery') }}">&laquo; Home</a>
+    <a href="{{ url_for('gallery') }}">&larr; Home</a>
 {% endif %}
 </p>
 
@@ -24,15 +24,15 @@
         >
         <div class="detail-nav">
             {% if prev_id %}
-                <a href="{{ url_for('image_detail', image_id=prev_id, cat=cat_param, q=q_param, album=album_param) }}">&laquo; Previous</a>
+                <a href="{{ url_for('image_detail', image_id=prev_id, cat=cat_param, q=q_param, album=album_param) }}">&larr; Previous</a>
             {% else %}
-                <span class="nav-disabled">&laquo; Previous</span>
+                <span class="nav-disabled">&larr; Previous</span>
             {% endif %}
             <span class="nav-position">{{ position }} / {{ total_in_context }}</span>
             {% if next_id %}
-                <a href="{{ url_for('image_detail', image_id=next_id, cat=cat_param, q=q_param, album=album_param) }}">Next &raquo;</a>
+                <a href="{{ url_for('image_detail', image_id=next_id, cat=cat_param, q=q_param, album=album_param) }}">Next &rarr;</a>
             {% else %}
-                <span class="nav-disabled">Next &raquo;</span>
+                <span class="nav-disabled">Next &rarr;</span>
             {% endif %}
         </div>
     </div>
@@ -44,7 +44,7 @@
         {% endif %}
 
         {% if image['album_name'] %}
-            <p class="album-link">📁 <a href="{{ url_for('album_detail', album_id=image['album_id']) }}">{{ image['album_name'] }}</a></p>
+            <p class="album-link">Album: <a href="{{ url_for('album_detail', album_id=image['album_id']) }}">{{ image['album_name'] }}</a></p>
         {% endif %}
 
         {% if image['tags'] %}
@@ -57,9 +57,9 @@
 
         <p class="meta">
             {% if image['photo_taken_date'] %}
-                📅 Taken: {{ image['photo_taken_date']|fmtdate }}
+                Taken {{ image['photo_taken_date']|fmtdate }}
             {% else %}
-                📅 Uploaded: {{ image['uploaded_at']|fmtdate }}
+                Uploaded {{ image['uploaded_at']|fmtdate }}
             {% endif %}
         </p>
 

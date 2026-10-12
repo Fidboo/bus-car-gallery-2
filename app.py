@@ -1,4 +1,5 @@
 import hmac
+import io
 import os
 import secrets
 import sqlite3
@@ -15,7 +16,7 @@ from flask import (
 )
 from werkzeug.security import check_password_hash, generate_password_hash
 from werkzeug.utils import secure_filename
-from PIL import Image as PILImage, ImageOps
+from PIL import Image as PILImage, ImageChops, ImageOps
 from PIL.ExifTags import TAGS
 
 from backup import start_scheduler as start_backup_scheduler
@@ -42,6 +43,17 @@ IS_DEV = os.environ.get("GALLERY_DEV") == "1"
 ALLOWED_EXTENSIONS = {"png", "jpg", "jpeg", "gif", "webp"}
 THUMB_SIZE = (500, 500)
 PER_PAGE = 24
+
+# Photos are shrunk before they go to R2 (storage is the main running cost).
+# Only photos whose longest side is above MAX_IMAGE_PX are downscaled and
+# re-encoded (4K is plenty for zooming on a screen); smaller photos are only
+# packed losslessly and keep every pixel. See optimize_image().
+MAX_IMAGE_PX = int(os.environ.get("MAX_IMAGE_PX", "3840"))
+JPEG_QUALITY = int(os.environ.get("JPEG_QUALITY", "92"))
+# 4:2:0 is what cameras use and looks identical on photos. "4:4:4" keeps the
+# finest colour edges but makes files roughly 30-50% bigger.
+JPEG_SUBSAMPLING = {"4:4:4": 0, "4:2:2": 1, "4:2:0": 2}.get(
+    os.environ.get("JPEG_SUBSAMPLING", "4:2:0"), 2)
 
 # --- Security settings ------------------------------------------------------
 LOGIN_MAX_FAILS = 5            # wrong passwords allowed ...
@@ -336,6 +348,92 @@ def make_thumbnail(src_path, dst_path):
         img.save(dst_path, "JPEG", **save_args)
 
 
+def _mozjpeg_pack(data):
+    """Lossless re-pack of JPEG bytes (identical pixels, all metadata kept)."""
+    try:
+        import mozjpeg_lossless_optimization as mozjpeg
+    except ImportError:
+        return data
+    return mozjpeg.optimize(data, mozjpeg.COPY_MARKERS.ALL)
+
+
+def _downscale_jpeg(src_path):
+    """Return JPEG bytes of the photo scaled to MAX_IMAGE_PX on its longest
+    side (lossy, quality JPEG_QUALITY). Rotation is baked in, the colour
+    profile and EXIF (camera, date ...) are kept, GPS position is dropped."""
+    with PILImage.open(src_path) as img:
+        keep_icc = img.mode in ("RGB", "L")
+        icc = img.info.get("icc_profile") if keep_icc else None
+        if img.format == "JPEG":
+            img.draft("RGB", (MAX_IMAGE_PX, MAX_IMAGE_PX))
+        img = ImageOps.exif_transpose(img)
+        exif = img.getexif()
+        exif.pop(0x8825, None)   # GPS
+        exif.pop(274, None)      # orientation (already applied)
+        img = img.convert("RGB")
+        img.thumbnail((MAX_IMAGE_PX, MAX_IMAGE_PX), PILImage.Resampling.LANCZOS)
+        buf = io.BytesIO()
+        save_args = {"quality": JPEG_QUALITY, "subsampling": JPEG_SUBSAMPLING,
+                     "optimize": True, "progressive": True}
+        if icc:
+            save_args["icc_profile"] = icc
+        if len(exif):
+            save_args["exif"] = exif.tobytes()
+        img.save(buf, "JPEG", **save_args)
+    return _mozjpeg_pack(buf.getvalue())
+
+
+def optimize_image(src_path, dst_path, ext):
+    """Make a photo smaller before it is stored. Returns True if a smaller
+    file was written to dst_path; False means "store the upload untouched".
+
+    - JPEG bigger than MAX_IMAGE_PX: downscaled to MAX_IMAGE_PX and re-encoded
+      at JPEG_QUALITY (typically 60-75% smaller for camera files).
+    - JPEG up to MAX_IMAGE_PX: lossless only (mozjpeg re-pack, identical
+      pixels, all metadata kept, typically 5-15% smaller).
+    - PNG: re-saved with maximum zlib compression, pixels verified identical.
+    - everything else (GIF, WEBP, animated files): stored exactly as uploaded.
+    A result that isn't smaller than the upload is never used.
+    """
+    original_size = os.path.getsize(src_path)
+
+    if ext in ("jpg", "jpeg"):
+        with PILImage.open(src_path) as probe:
+            too_big = max(probe.size) > MAX_IMAGE_PX
+        if too_big:
+            out = _downscale_jpeg(src_path)
+            if len(out) < original_size:
+                with open(dst_path, "wb") as f:
+                    f.write(out)
+                return True
+        with open(src_path, "rb") as f:
+            out = _mozjpeg_pack(f.read())
+        if len(out) >= original_size:
+            return False
+        with open(dst_path, "wb") as f:
+            f.write(out)
+        return True
+
+    if ext == "png":
+        with PILImage.open(src_path) as img:
+            if getattr(img, "is_animated", False):
+                return False
+            img.load()
+            args = {"optimize": True, "compress_level": 9}
+            for key in ("icc_profile", "transparency", "dpi", "gamma"):
+                if key in img.info:
+                    args[key] = img.info[key]
+            img.save(dst_path, "PNG", **args)
+        if os.path.getsize(dst_path) >= original_size:
+            return False
+        with PILImage.open(src_path) as a, PILImage.open(dst_path) as b:
+            same = a.mode == b.mode and a.size == b.size and ImageChops.difference(
+                a.convert("RGBA"), b.convert("RGBA")).getbbox() is None
+        return same
+
+    return False
+
+
 def extract_exif_date(path):
     """Return the photo's 'date taken' as 'YYYY-MM-DD', or None if the file
     has no usable EXIF date (e.g. a screenshot, or metadata stripped)."""
@@ -567,8 +665,16 @@ def gallery():
             "cover_filename": cover["filename"] if cover else None,
             "count": count,
         })
+    latest = conn.execute(
+        """SELECT id, title, thumbnail, filename, category
+           FROM images ORDER BY id DESC LIMIT 8"""
+    ).fetchall()
+    album_count = conn.execute("SELECT COUNT(*) FROM albums").fetchone()[0]
     conn.close()
-    return render_template("index.html", tiles=tiles)
+    return render_template(
+        "index.html", tiles=tiles, latest=latest, album_count=album_count,
+        total_photos=sum(t["count"] for t in tiles),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -888,6 +994,7 @@ def process_upload(file):
     unique_name = secure_filename(f"{uuid.uuid4().hex}.{ext}")
     thumb_name = f"{uuid.uuid4().hex}.jpg"
     tmp_path = os.path.join(TMP_FOLDER, unique_name)
+    tmp_full = os.path.join(TMP_FOLDER, "opt_" + unique_name)
     tmp_thumb = os.path.join(TMP_FOLDER, thumb_name)
     stored = []
 
@@ -903,14 +1010,23 @@ def process_upload(file):
 
         photo_taken_date = extract_exif_date(tmp_path)
 
+        # Lossless size reduction. If it doesn't make the file smaller (or
+        # anything goes wrong) the uploaded file is stored exactly as it came.
+        full_path = tmp_path
+        try:
+            if optimize_image(tmp_path, tmp_full, ext):
+                full_path = tmp_full
+        except Exception:
+            app.logger.exception("Lossless optimization failed, storing original")
+
         thumb_ok = True
         try:
-            make_thumbnail(tmp_path, tmp_thumb)
+            make_thumbnail(full_path, tmp_thumb)
         except Exception:
             thumb_ok = False
 
         try:
-            storage.put("uploads", unique_name, tmp_path)
+            storage.put("uploads", unique_name, full_path)
             stored.append(("uploads", unique_name))
             if thumb_ok:
                 storage.put("thumbnails", thumb_name, tmp_thumb)
@@ -931,7 +1047,7 @@ def process_upload(file):
             "photo_taken_date": photo_taken_date,
         }, None
     finally:
-        for leftover in (tmp_path, tmp_thumb):
+        for leftover in (tmp_path, tmp_full, tmp_thumb):
             if os.path.exists(leftover):
                 os.remove(leftover)
 

@@ -2,22 +2,43 @@
 {% block title %}Vehicle Gallery{% endblock %}
 {% block content %}
 
-<h1>Choose a category</h1>
+<section class="hero">
+    <p class="eyebrow">Photo archive</p>
+    <h1 class="hero-title">Buses, cars, trams<br>and trains.</h1>
+    <p class="hero-lede">A growing collection of vehicle photographs, sorted by type and searchable by make, model and place.</p>
+    <p class="hero-meta">{{ total_photos }} photo{{ 's' if total_photos != 1 else '' }}{% if album_count %} &middot; {{ album_count }} album{{ 's' if album_count != 1 else '' }}{% endif %}</p>
+</section>
 
-<div class="tile-grid">
+<section class="categories" aria-label="Categories">
     {% for tile in tiles %}
-    <a class="tile" href="{{ url_for('category_view', slug=tile.slug) }}">
+    <a class="tile {{ 'tile-empty' if not tile.cover_thumb }}" href="{{ url_for('category_view', slug=tile.slug) }}">
         {% if tile.cover_thumb %}
-            <img src="{{ thumb_url(tile.cover_thumb, tile.cover_filename) }}" alt="{{ tile.label }}">
-        {% else %}
-            <div class="tile-placeholder">{{ tile.emoji }}</div>
+            <img src="{{ thumb_url(tile.cover_thumb, tile.cover_filename) }}" alt="" {{ 'fetchpriority=high' if loop.first else 'loading=lazy' }}>
         {% endif %}
-        <div class="tile-body">
-            <div class="tile-label">{{ tile.emoji }} {{ tile.label }}</div>
-            <div class="tile-count">{{ tile.count }} photo{{ 's' if tile.count != 1 else '' }}</div>
-        </div>
+        <span class="tile-body">
+            <span class="tile-label">{{ tile.label }}</span>
+            <span class="tile-count">{{ tile.count }} photo{{ 's' if tile.count != 1 else '' }}</span>
+        </span>
     </a>
     {% endfor %}
-</div>
+</section>
+
+{% if latest %}
+<section class="latest">
+    <div class="section-head">
+        <h2>Recently added</h2>
+    </div>
+    <div class="grid">
+        {% for image in latest %}
+        <a class="card" href="{{ url_for('image_detail', image_id=image['id'], cat=image['category']) }}">
+            <img src="{{ thumb_url(image['thumbnail'], image['filename']) }}" alt="{{ image['title'] }}" loading="lazy">
+            <div class="card-body">
+                <div class="card-title">{{ image['title'] }}</div>
+            </div>
+        </a>
+        {% endfor %}
+    </div>
+</section>
+{% endif %}
 
 {% endblock %}

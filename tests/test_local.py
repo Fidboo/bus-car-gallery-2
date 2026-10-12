@@ -100,8 +100,8 @@ def test_delete_needs_csrf(appmod):
     assert c.get(f"/image/{image_id}").status_code == 200
 
 
-def test_upload_makes_thumbnail_and_download_is_original(appmod):
-    from PIL import Image
+def test_upload_makes_thumbnail_and_keeps_pixels_identical(appmod):
+    from PIL import Image, ImageChops
     c = appmod.app.test_client()
     login(c)
     original = make_jpeg()
@@ -116,15 +116,22 @@ def test_upload_makes_thumbnail_and_download_is_original(appmod):
     assert row["tags"] == "bus, volvo"
     with Image.open(os.path.join(appmod.THUMB_FOLDER, row["thumbnail"])) as t:
         assert max(t.size) <= 500
-    # originals are stored untouched (byte for byte)
-    assert open(os.path.join(appmod.UPLOAD_FOLDER, row["filename"]), "rb").read() == original
+
+    # lossless: same size in pixels, every pixel identical, never bigger
+    path = os.path.join(appmod.UPLOAD_FOLDER, row["filename"])
+    stored = open(path, "rb").read()
+    assert len(stored) <= len(original)
+    with Image.open(io.BytesIO(original)) as a, Image.open(path) as b:
+        assert a.size == b.size == (3000, 2000)
+        assert ImageChops.difference(a.convert("RGB"), b.convert("RGB")).getbbox() is None
+        assert b.getexif().get(306) == "2023:05:17 12:00:00"     # metadata kept
     assert os.listdir(appmod.TMP_FOLDER) == []
 
     r = c.get(f"/download/{image_id}")
     assert r.status_code == 200
     assert r.headers["Content-Disposition"].startswith("attachment")
     assert "Volvo_B10M.jpg" in r.headers["Content-Disposition"]
-    assert r.data == original
+    assert r.data == stored
 
     page = c.get(f"/image/{image_id}").get_data(as_text=True)
     assert f"/media/uploads/{row['filename']}" in page
@@ -279,3 +286,106 @@ def test_old_database_is_migrated(tmp_path, monkeypatch):
     assert c.get("/").status_code == 200
     assert c.get("/category/bus").status_code == 200
     assert c.get("/albums").status_code == 200
+
+
+def _stored(appmod, c, data, name):
+    r = upload(c, data=data, name=name)
+    assert r.get_json()["ok"], r.get_json()
+    conn = appmod.get_db()
+    row = conn.execute("SELECT filename FROM images WHERE id = ?", (r.get_json()["id"],)).fetchone()
+    conn.close()
+    return row["filename"], os.path.join(appmod.UPLOAD_FOLDER, row["filename"])
+
+
+def _noisy_jpeg(size, quality=92, exif=None):
+    from PIL import Image, ImageFilter
+    img = Image.frombytes("RGB", size, os.urandom(size[0] * size[1] * 3)).filter(ImageFilter.GaussianBlur(1))
+    buf = io.BytesIO()
+    kwargs = {"exif": exif} if exif else {}
+    img.save(buf, "JPEG", quality=quality, **kwargs)
+    return buf.getvalue()
+
+
+def test_jpeg_is_smaller_but_pixel_identical_and_rotation_kept(appmod):
+    from PIL import Image, ImageChops
+    c = appmod.app.test_client()
+    login(c)
+    exif = Image.Exif()
+    exif[274] = 6                                   # "rotate 90 degrees"
+    original = _noisy_jpeg((2400, 1600), exif=exif.tobytes())
+    name, path = _stored(appmod, c, original, "r.jpg")
+    assert name.endswith(".jpg")
+    assert os.path.getsize(path) < len(original)    # lossless packing saves space
+    with Image.open(io.BytesIO(original)) as a, Image.open(path) as b:
+        assert a.size == b.size == (2400, 1600)     # no downscaling
+        assert ImageChops.difference(a, b).getbbox() is None
+        assert b.getexif().get(274) == 6            # orientation tag still there
+
+
+def test_png_stays_png_and_pixels_identical(appmod):
+    from PIL import Image, ImageChops
+    c = appmod.app.test_client()
+    login(c)
+    img = Image.new("RGBA", (600, 400), (255, 0, 0, 0))
+    img.putpixel((5, 5), (1, 2, 3, 200))
+    buf = io.BytesIO()
+    img.save(buf, "PNG", compress_level=0)          # badly compressed on purpose
+    name, path = _stored(appmod, c, buf.getvalue(), "t.png")
+    assert name.endswith(".png")
+    assert os.path.getsize(path) < len(buf.getvalue())
+    with Image.open(path) as out:
+        assert out.mode == "RGBA"
+        assert ImageChops.difference(img, out).getbbox() is None
+
+
+def test_other_formats_are_stored_untouched(appmod):
+    from PIL import Image
+    c = appmod.app.test_client()
+    login(c)
+    frames = [Image.new("RGB", (50, 50), col) for col in ((255, 0, 0), (0, 255, 0), (0, 0, 255))]
+    buf = io.BytesIO()
+    frames[0].save(buf, "GIF", save_all=True, append_images=frames[1:], duration=100, loop=0)
+    name, path = _stored(appmod, c, buf.getvalue(), "a.gif")
+    assert name.endswith(".gif")
+    assert open(path, "rb").read() == buf.getvalue()
+    assert os.listdir(appmod.TMP_FOLDER) == []
+
+
+def test_already_optimal_file_is_stored_byte_for_byte(appmod, monkeypatch):
+    c = appmod.app.test_client()
+    login(c)
+    original = make_jpeg((200, 100))
+    monkeypatch.setattr(appmod, "optimize_image", lambda *a, **k: False)
+    _, path = _stored(appmod, c, original, "o.jpg")
+    assert open(path, "rb").read() == original
+
+
+def test_photo_above_limit_is_downscaled_rotated_and_gps_removed(appmod, monkeypatch):
+    from PIL import Image
+    monkeypatch.setattr(appmod, "MAX_IMAGE_PX", 1200)     # keeps the test fast
+    c = appmod.app.test_client()
+    login(c)
+    exif = Image.Exif()
+    exif[274] = 6                                          # "rotate 90 degrees"
+    exif[306] = "2021:01:02 10:00:00"
+    exif.get_ifd(0x8825)[1] = "N"                          # a GPS tag
+    original = _noisy_jpeg((2400, 1600), quality=95, exif=exif.tobytes())
+    name, path = _stored(appmod, c, original, "big.jpg")
+    assert name.endswith(".jpg")
+    with Image.open(path) as out:
+        assert out.size == (800, 1200)                     # portrait now, long side = limit
+        assert out.getexif().get(274) in (None, 1)         # rotation baked into the pixels
+        assert not out.getexif().get_ifd(0x8825)           # GPS gone
+        assert out.getexif().get(306) == "2021:01:02 10:00:00"
+    assert os.path.getsize(path) < len(original) / 2
+    assert os.listdir(appmod.TMP_FOLDER) == []
+
+
+def test_photo_below_limit_keeps_its_resolution(appmod, monkeypatch):
+    from PIL import Image
+    monkeypatch.setattr(appmod, "MAX_IMAGE_PX", 3840)
+    c = appmod.app.test_client()
+    login(c)
+    _, path = _stored(appmod, c, _noisy_jpeg((2400, 1600)), "ok.jpg")
+    with Image.open(path) as out:
+        assert out.size == (2400, 1600)

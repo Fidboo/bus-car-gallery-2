@@ -255,7 +255,7 @@
     function buildSelects() {
         fCategory.textContent = '';
         var ph = el('option', '', 'Choose a category…'); ph.value = ''; fCategory.appendChild(ph);
-        CATEGORIES.forEach(function (c) { var o = el('option', '', c.emoji + ' ' + c.label); o.value = c.slug; fCategory.appendChild(o); });
+        CATEGORIES.forEach(function (c) { var o = el('option', '', c.label); o.value = c.slug; fCategory.appendChild(o); });
         var m = el('option', '', 'Mixed'); m.value = MIXED; m.hidden = true; m.disabled = true; fCategory.appendChild(m);
         buildAlbumSelect();
     }

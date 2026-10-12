@@ -2,9 +2,9 @@
 {% block title %}{{ album['name'] }}{% endblock %}
 {% block content %}
 
-<p><a href="{{ url_for('albums_list') }}">&laquo; All albums</a></p>
+<p class="back-link"><a href="{{ url_for('albums_list') }}">&larr; All albums</a></p>
 
-<h1>📁 {{ album['name'] }}</h1>
+<h1>{{ album['name'] }}</h1>
 <p class="result-count">{{ images|length }} photo{{ 's' if images|length != 1 else '' }}</p>
 
 {% if session.get('logged_in') %}

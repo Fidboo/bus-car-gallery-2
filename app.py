@@ -1,3 +1,4 @@
+import hashlib
 import hmac
 import io
 import os
@@ -606,6 +607,34 @@ def thumb_url(thumbnail, filename=None):
     if filename and thumbnail == filename:
         return media_url("uploads", filename)
     return media_url("thumbnails", thumbnail)
+
+
+_static_versions = {}
+
+
+@app.url_defaults
+def add_static_version(endpoint, values):
+    """Append ?v=<content hash> to /static/ URLs.
+
+    Static files are cached for a year (see SEND_FILE_MAX_AGE_DEFAULT), so
+    without this a browser/CDN keeps serving an old style.css after a deploy.
+    With it, a changed file gets a new URL and is fetched again, while an
+    unchanged file stays cached.
+    """
+    if endpoint != "static" or "filename" not in values:
+        return
+    name = values["filename"]
+    version = _static_versions.get(name)
+    if version is None:
+        path = os.path.join(app.static_folder, name)
+        try:
+            with open(path, "rb") as f:
+                version = hashlib.md5(f.read()).hexdigest()[:10]
+        except OSError:
+            return
+        _static_versions[name] = version
+    values["v"] = version
+
 
 
 @app.context_processor

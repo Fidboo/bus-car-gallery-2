@@ -5,26 +5,27 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>{% block title %}Vehicle Gallery{% endblock %}</title>
     <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
-    <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 32 32%22><rect width=%2232%22 height=%2232%22 rx=%226%22 fill=%22%23a8321b%22/><path d=%22M7 21V11h18v10zM7 16h18%22 stroke=%22%23fff%22 stroke-width=%222%22 fill=%22none%22/></svg>">
-    <link rel="preload" href="{{ url_for('static', filename='fonts/inter-latin-wght-normal.woff2') }}" as="font" type="font/woff2" crossorigin>
-    <link rel="preload" href="{{ url_for('static', filename='fonts/fraunces-latin-wght-normal.woff2') }}" as="font" type="font/woff2" crossorigin>
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 32 32%22 fill=%22none%22 stroke=%22%232347f5%22 stroke-width=%222.4%22%3E%3Crect x=%224%22 y=%224%22 width=%2224%22 height=%2221%22 rx=%225%22/%3E%3Cpath d=%22M4 16h24%22/%3E%3C/svg%3E">
 </head>
 <body>
     <header class="site-header">
-        <div class="header-inner">
-            <a class="brand" href="{{ url_for('gallery') }}">Vehicle Gallery</a>
-            <nav>
-                <a href="{{ url_for('gallery') }}">Home</a>
-                <a href="{{ url_for('albums_list') }}">Albums</a>
+        <div class="bar">
+            <a class="brand" href="{{ url_for('gallery') }}">
+                <svg viewBox="0 0 32 32" fill="none" aria-hidden="true"><rect x="4" y="4" width="24" height="21" rx="5" stroke="currentColor" stroke-width="2.4"/><path d="M4 16h24" stroke="currentColor" stroke-width="2.4"/><circle cx="10.5" cy="21" r="1.6" fill="currentColor"/><circle cx="21.5" cy="21" r="1.6" fill="currentColor"/><path d="M9 28h4M19 28h4" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"/></svg>
+                Vehicle Gallery
+            </a>
+            <nav aria-label="Main">
+                <a href="{{ url_for('gallery') }}" {% if request.endpoint == 'gallery' %}aria-current="page"{% endif %}>Home</a>
+                <a href="{{ url_for('albums_list') }}" {% if request.endpoint in ('albums_list', 'album_detail') %}aria-current="page"{% endif %}>Albums</a>
                 {% if CONTACT_EMAIL %}
                     <a href="mailto:{{ CONTACT_EMAIL }}">Contact</a>
                 {% endif %}
                 {% if session.get('logged_in') %}
                     <a href="{{ url_for('upload') }}">Upload</a>
                     <a href="{{ url_for('stats') }}">Stats</a>
-                    <a href="{{ url_for('logout') }}">Log out</a>
+                    <a class="nav-button" href="{{ url_for('logout') }}">Log out</a>
                 {% else %}
-                    <a href="{{ url_for('login') }}">Log in</a>
+                    <a class="nav-button" href="{{ url_for('login') }}">Log in</a>
                 {% endif %}
             </nav>
         </div>
@@ -45,7 +46,10 @@
     </main>
 
     <footer class="site-footer">
-        <p>Vehicle Gallery</p>
+        <div class="footer-inner">
+            <span>Vehicle Gallery</span>
+            <span>Please ask before reusing photos elsewhere.</span>
+        </div>
     </footer>
 </body>
 </html>

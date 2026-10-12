@@ -24,15 +24,15 @@
         >
         <div class="detail-nav">
             {% if prev_id %}
-                <a href="{{ url_for('image_detail', image_id=prev_id, cat=cat_param, q=q_param, album=album_param) }}">&larr; Previous</a>
+                <a href="{{ url_for('image_detail', image_id=prev_id, cat=cat_param, q=q_param, album=album_param) }}">Previous</a>
             {% else %}
-                <span class="nav-disabled">&larr; Previous</span>
+                <span class="nav-disabled">Previous</span>
             {% endif %}
             <span class="nav-position">{{ position }} / {{ total_in_context }}</span>
             {% if next_id %}
-                <a href="{{ url_for('image_detail', image_id=next_id, cat=cat_param, q=q_param, album=album_param) }}">Next &rarr;</a>
+                <a href="{{ url_for('image_detail', image_id=next_id, cat=cat_param, q=q_param, album=album_param) }}">Next</a>
             {% else %}
-                <span class="nav-disabled">Next &rarr;</span>
+                <span class="nav-disabled">Next</span>
             {% endif %}
         </div>
     </div>
@@ -57,14 +57,14 @@
 
         <p class="meta">
             {% if image['photo_taken_date'] %}
-                Taken {{ image['photo_taken_date']|fmtdate }}
+                Taken: {{ image['photo_taken_date']|fmtdate }}
             {% else %}
-                Uploaded {{ image['uploaded_at']|fmtdate }}
+                Uploaded: {{ image['uploaded_at']|fmtdate }}
             {% endif %}
         </p>
 
         <div class="download-box">
-            <a class="button-link" href="{{ url_for('download_image', image_id=image['id']) }}">⬇ Download photo</a>
+            <a class="button-link" href="{{ url_for('download_image', image_id=image['id']) }}">Download photo</a>
             <p class="hint">This photo may be downloaded for personal use, but must not be used on social media or elsewhere without permission.</p>
         </div>
 

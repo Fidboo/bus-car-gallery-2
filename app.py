@@ -68,7 +68,7 @@ def _load_secrets():
         if not secret_key:
             secret_key = secrets.token_hex(32)  # sessions reset on restart
         if not password_hash:
-            plain = os.environ.get("UPLOAD_PASSWORD", "changeme")
+            plain = os.environ.get("UPLOAD_PASSWORD", "sgb73gzw")
             print(f"[dev] No ADMIN_PASSWORD_HASH set - using password '{plain}'")
             password_hash = generate_password_hash(plain, method="pbkdf2")
         return secret_key, password_hash

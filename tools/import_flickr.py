@@ -434,6 +434,65 @@ def http():
     return s
 
 
+class RateLimited(Exception):
+    def __init__(self, retry_after=None):
+        super().__init__("429/503 fra Flickrs CDN")
+        self.retry_after = retry_after
+
+
+def nap(seconds):
+    """Soev i smaa stykker, saa Ctrl-C virker."""
+    end = time.time() + seconds
+    while time.time() < end and not _stop.is_set():
+        time.sleep(min(1.0, end - time.time()))
+
+
+class Gate:
+    """Faelles bremse for alle traade: jaevnt tempo + automatisk pause ved 429."""
+    MAX_INTERVAL = 20.0
+
+    def __init__(self, base):
+        self.base = base
+        self.interval = base
+        self.next = 0.0
+        self.cool_until = 0.0
+        self.streak = 0
+        self.ok_count = 0
+        self.cooldowns = 0
+        self.lock = threading.Lock()
+
+    def wait(self):
+        with self.lock:
+            now = time.time()
+            t = max(self.next, self.cool_until, now)
+            self.next = t + self.interval
+        nap(t - now)
+
+    def penalize(self, retry_after=None):
+        with self.lock:
+            now = time.time()
+            if now >= self.cool_until:               # ny blokering (ikke 4 traade om samme)
+                self.streak += 1
+                self.cooldowns += 1
+                cool = retry_after or min(900, 60 * 2 ** (self.streak - 1))
+                self.cool_until = now + cool
+                self.interval = min(self.interval * 2, self.MAX_INTERVAL)
+                print(f"  ~ Flickrs CDN siger 'for hurtigt' - pauser {cool:.0f}s og saetter tempoet ned "
+                      f"(nu 1 billede pr. {self.interval:.1f}s)", flush=True)
+            return max(0.0, self.cool_until - now)
+
+    def success(self):
+        with self.lock:
+            self.streak = 0
+            self.ok_count += 1
+            if self.ok_count % 25 == 0 and self.interval > self.base:
+                self.interval = max(self.base, self.interval * 0.8)
+
+
+GATE = Gate(1.5)
+MAX_COOLDOWNS = 6          # efter 6 pauser i traek gives op for denne koersel (intet markeres som fejl)
+
+
 def download(url, dst):
     last = None
     for attempt in range(1, 6):
@@ -441,6 +500,9 @@ def download(url, dst):
             with http().get(url, stream=True, timeout=(15, 90)) as r:
                 if r.status_code in (403, 404, 410):
                     raise PermissionError(f"HTTP {r.status_code}")   # varigt - proev ikke igen
+                if r.status_code in (429, 503):
+                    ra = r.headers.get("Retry-After", "")
+                    raise RateLimited(int(ra) if ra.isdigit() else None)
                 r.raise_for_status()
                 expected = int(r.headers.get("Content-Length", 0))
                 got = 0
@@ -451,7 +513,7 @@ def download(url, dst):
                 if got == 0 or (expected and got != expected):
                     raise IOError(f"ufuldstaendig download ({got}/{expected} bytes)")
                 return got
-        except PermissionError:
+        except (PermissionError, RateLimited):
             raise
         except (requests.RequestException, IOError) as e:
             last = e
@@ -478,7 +540,20 @@ def process_one(row, r2, tmp_dir):
     thumb = os.path.join(tmp_dir, f"fl{fid}_t.jpg")
     fname, tname = f"fl{fid}.{ext}", f"fl{fid}_t.jpg"
     try:
-        size_in = download(row["source_url"], raw)
+        size_in = None
+        for _ in range(MAX_COOLDOWNS):
+            if _stop.is_set():
+                return {"ok": False, "deferred": True}
+            GATE.wait()
+            try:
+                size_in = download(row["source_url"], raw)
+                GATE.success()
+                break
+            except RateLimited as e:
+                GATE.penalize(e.retry_after)
+        if size_in is None:
+            _stop.set()                               # CDN'en bliver ved - stop pænt, intet er markeret som fejl
+            return {"ok": False, "deferred": True, "blocked": True}
         with PILImage.open(raw) as probe:
             probe.verify()
         taken = row["date_taken"] or app.extract_exif_date(raw)
@@ -574,6 +649,7 @@ def cmd_images(args):
             return
 
     r2 = make_r2()
+    GATE.base = GATE.interval = max(0.0, args.delay)
     tmp_dir = os.path.join(Ctx.data_dir, "tmp", "flickr")
     os.makedirs(tmp_dir, exist_ok=True)
     order = "date_taken, date_upload" if args.order == "taken" else "date_upload, flickr_id"
@@ -585,7 +661,7 @@ def cmd_images(args):
                                              print("\nStopper efter nuvaerende gruppe ... (Ctrl-C igen = hard stop)")))
 
     t0 = time.time()
-    ok = failed = bytes_in = bytes_out = 0
+    ok = failed = deferred = bytes_in = bytes_out = 0
     window = max(args.workers * 3, 4)
     total = len(rows)
     with ThreadPoolExecutor(max_workers=args.workers) as ex:
@@ -600,6 +676,9 @@ def cmd_images(args):
             batch = [b for b in batch if b["flickr_id"] not in blocked]
             results = list(ex.map(lambda b: process_one(b, r2, tmp_dir), batch))   # bevarer raekkefoelgen
             for row, res in zip(batch, results):
+                if res.get("deferred"):
+                    deferred += 1
+                    continue
                 if res["ok"]:
                     try:
                         with conn:                  # EN transaktion: billede + checkpoint
@@ -630,6 +709,8 @@ def cmd_images(args):
                                  (attempts, res["error"], row["flickr_id"]))
                 print(f"  ! {row['flickr_id']} {row['title'][:30]!r}: {res['error']}")
             n = ok + failed
+            if not n:
+                continue
             el = time.time() - t0
             rate = n / el if el else 0
             eta = (total - n) / rate if rate else 0
@@ -637,7 +718,11 @@ def cmd_images(args):
             print(f"[{n}/{total}] ok={ok} fejl={failed}  hentet {fmt_bytes(bytes_in)} -> R2 {fmt_bytes(bytes_out)}"
                   f" (-{saved:.0f}%)  {rate * 60:.0f}/min  ca. {eta / 3600:.1f} t tilbage", flush=True)
 
-    print(f"\nStoppet. ok={ok}, fejl={failed}." + ("  Koer samme kommando igen for at fortsaette." if _stop.is_set() or failed else ""))
+    print(f"\nStoppet. ok={ok}, fejl={failed}, udskudt={deferred}." +
+          ("  Koer samme kommando igen for at fortsaette." if _stop.is_set() or failed else ""))
+    if deferred and GATE.cooldowns:
+        print("Flickrs CDN blokerede (429). Ingenting er tabt - vent ca. 30-60 min og koer kommandoen igen,"
+              " eller brug en hoejere --delay (fx 3).")
     if failed:
         print("Fejlede billeder proeves automatisk igen ved naeste koersel (op til --max-attempts).")
 
@@ -741,7 +826,10 @@ def main():
     m.set_defaults(fn=cmd_metadata)
 
     i = sub.add_parser("images", help="fase 2: download, komprimer, upload til R2")
-    i.add_argument("--workers", type=int, default=4, help="samtidige billeder (standard 4)")
+    i.add_argument("--workers", type=int, default=2, help="samtidige billeder (standard 2)")
+    i.add_argument("--delay", type=float, default=1.5,
+                   help="mindste sekunder mellem start af to downloads (standard 1.5 = max ca. 40/min). "
+                        "Stiger automatisk ved 429.")
     i.add_argument("--limit", type=int, help="kun de foerste N (til en proeve, fx --limit 20)")
     i.add_argument("--order", choices=["upload", "taken"], default="upload",
                    help="raekkefoelge; galleriet viser hoejeste id foerst, saa den sidst importerede staar oeverst")

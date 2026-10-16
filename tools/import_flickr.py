@@ -4,6 +4,10 @@
 Foerste gang (i denne rækkefølge):
 
     python tools/import_flickr.py metadata          # fase 1: ~2 min, kun Flickr API
+
+Fra Flickrs eksport (zip-filer; ingen CDN-graense) - anbefalet naar Flickr blokerer:
+    python tools/import_flickr.py export-metadata --source ~/Downloads/flickr-export
+    python tools/import_flickr.py images --source ~/Downloads/flickr-export --workers 4
     python tools/import_flickr.py report            # tjek albums, udelukkelser, kategorier
     caffeinate -i python tools/import_flickr.py images    # fase 2: timer, kan afbrydes og genoptages
     python tools/import_flickr.py verify            # tjek at alt ligger i R2
@@ -12,6 +16,7 @@ Foerste gang (i denne rækkefølge):
 Andre kommandoer:
     reclassify        koer regelmotoren (tools/flickr_rules.py) igen
     purge-excluded    slet evt. allerede importerede billeder fra udelukkede albums
+    reset-import      slet ALT importeret fra Flickr (R2-filer, billeder, albums, koe) og start forfra
 
 Indstillinger (i .env eller som miljoevariabler):
     FLICKR_API_KEY   din Flickr API key (kun key, secret skal IKKE bruges til offentlige billeder)
@@ -29,8 +34,12 @@ import re
 import signal
 import sqlite3
 import sys
+import shutil
 import threading
 import time
+import zipfile
+import json
+import calendar
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
@@ -449,7 +458,7 @@ def nap(seconds):
 
 class Gate:
     """Faelles bremse for alle traade: jaevnt tempo + automatisk pause ved 429."""
-    MAX_INTERVAL = 20.0
+    MAX_INTERVAL = 4.0
 
     def __init__(self, base):
         self.base = base
@@ -476,17 +485,18 @@ class Gate:
                 self.cooldowns += 1
                 cool = retry_after or min(900, 60 * 2 ** (self.streak - 1))
                 self.cool_until = now + cool
-                self.interval = min(self.interval * 2, self.MAX_INTERVAL)
-                print(f"  ~ Flickrs CDN siger 'for hurtigt' - pauser {cool:.0f}s og saetter tempoet ned "
-                      f"(nu 1 billede pr. {self.interval:.1f}s)", flush=True)
+                if self.streak == 1:                  # kun en gang pr. blokering, ikke ved hver gentagelse
+                    self.interval = min(max(self.interval * 1.5, 1.0), self.MAX_INTERVAL)
+                print(f"  ~ Flickrs CDN siger 'for hurtigt' - pauser {cool:.0f}s "
+                      f"(tempo: 1 billede pr. {self.interval:.1f}s)", flush=True)
             return max(0.0, self.cool_until - now)
 
     def success(self):
         with self.lock:
             self.streak = 0
             self.ok_count += 1
-            if self.ok_count % 25 == 0 and self.interval > self.base:
-                self.interval = max(self.base, self.interval * 0.8)
+            if self.ok_count % 10 == 0 and self.interval > self.base:
+                self.interval = max(self.base, self.interval * 0.75)
 
 
 GATE = Gate(1.5)
@@ -527,49 +537,68 @@ def ext_of(url):
     return "jpg" if e == "jpeg" else e
 
 
-def process_one(row, r2, tmp_dir):
-    """Download -> verificer -> optimer -> thumbnail -> upload. Ingen DB her."""
+def raw_path(row, tmp_dir):
+    ext = ext_of(row["source_url"])
+    if ext not in Ctx.app.ALLOWED_EXTENSIONS:
+        ext = "jpg"
+    return os.path.join(tmp_dir, f"fl{row['flickr_id']}.{ext}"), ext
+
+
+UPLOAD_POOL = None          # saettes i cmd_images: lader hovedbillede og thumbnail uploade samtidig
+
+
+def process_file(row, r2, tmp_dir, fetch):
+    """fetch(raw) laegger kildefilen paa disken -> verificer -> optimer -> thumbnail -> upload.
+    Ingen DB her. fetch kan returnere en dict ({'deferred': True}) for at afbryde.
+    Resultatet indeholder 't' = sekunder brugt pr. trin, saa man kan se hvad der er flaskehalsen."""
     from PIL import Image as PILImage
     app = Ctx.app
     fid = row["flickr_id"]
-    ext = ext_of(row["source_url"])
-    if ext not in app.ALLOWED_EXTENSIONS:
-        ext = "jpg"
-    raw = os.path.join(tmp_dir, f"fl{fid}.{ext}")
+    raw, ext = raw_path(row, tmp_dir)
     opt = os.path.join(tmp_dir, f"fl{fid}_opt.{ext}")
     thumb = os.path.join(tmp_dir, f"fl{fid}_t.jpg")
     fname, tname = f"fl{fid}.{ext}", f"fl{fid}_t.jpg"
+    t = {}
+    clock = time.perf_counter
     try:
-        size_in = None
-        for _ in range(MAX_COOLDOWNS):
-            if _stop.is_set():
-                return {"ok": False, "deferred": True}
-            GATE.wait()
-            try:
-                size_in = download(row["source_url"], raw)
-                GATE.success()
-                break
-            except RateLimited as e:
-                GATE.penalize(e.retry_after)
-        if size_in is None:
-            _stop.set()                               # CDN'en bliver ved - stop pænt, intet er markeret som fejl
-            return {"ok": False, "deferred": True, "blocked": True}
+        t0 = clock()
+        size_in = fetch(raw)
+        if isinstance(size_in, dict):
+            return size_in
+        t["hent/udpak"] = clock() - t0
+
+        t0 = clock()
         with PILImage.open(raw) as probe:
             probe.verify()
         taken = row["date_taken"] or app.extract_exif_date(raw)
+        t["tjek"] = clock() - t0
+
+        t0 = clock()
         full = raw
         try:
             if app.optimize_image(raw, opt, ext):
                 full = opt
         except Exception:
             full = raw                               # som i appen: gem originalen
+        t["optimer"] = clock() - t0
+
+        t0 = clock()
         app.make_thumbnail(full, thumb)
+        t["thumbnail"] = clock() - t0
         size_out = os.path.getsize(full)
+
         # Upload. Faste noegler -> en gentagelse overskriver blot samme fil.
-        r2.put("uploads", fname, full)               # put() sletter den lokale fil bagefter
-        r2.put("thumbnails", tname, thumb)
+        t0 = clock()
+        if UPLOAD_POOL is not None:
+            f_full = UPLOAD_POOL.submit(r2.put, "uploads", fname, full)   # put() sletter lokal fil bagefter
+            r2.put("thumbnails", tname, thumb)
+            f_full.result()
+        else:
+            r2.put("uploads", fname, full)
+            r2.put("thumbnails", tname, thumb)
+        t["upload"] = clock() - t0
         return {"ok": True, "filename": fname, "thumbnail": tname, "taken": taken,
-                "bytes_in": size_in, "bytes_out": size_out}
+                "bytes_in": size_in, "bytes_out": size_out, "t": t}
     except PermissionError as e:
         return {"ok": False, "permanent": True, "error": str(e)}
     except Exception as e:                           # noqa: BLE001 - alt skal fanges pr. billede
@@ -581,6 +610,231 @@ def process_one(row, r2, tmp_dir):
                     os.remove(p)
                 except OSError:
                     pass
+
+
+def process_one(row, r2, tmp_dir):
+    """Download fra Flickrs CDN (med faelles bremse)."""
+    def fetch(raw):
+        for _ in range(MAX_COOLDOWNS):
+            if _stop.is_set():
+                return {"ok": False, "deferred": True}
+            GATE.wait()
+            try:
+                size = download(row["source_url"], raw)
+                GATE.success()
+                return size
+            except RateLimited as e:
+                GATE.penalize(e.retry_after)
+        _stop.set()                                   # CDN'en bliver ved - stop paent, intet er markeret som fejl
+        return {"ok": False, "deferred": True, "blocked": True}
+    return process_file(row, r2, tmp_dir, fetch)
+
+
+def process_local(row, r2, tmp_dir, ref):
+    """Pakker billedet ud af zip-filen (i denne traad) og behandler det."""
+    def fetch(raw):
+        extract_member(ref, raw)
+        return os.path.getsize(raw)
+    return process_file(row, r2, tmp_dir, fetch)
+
+
+# ---------------------------------------------------------------------------
+# Flickr-eksport (zip-filer) som kilde
+# ---------------------------------------------------------------------------
+PHOTO_JSON_RE = re.compile(r"^photo_(\d+)\.json$")
+IMG_RE = re.compile(r"_(\d+)_o\.([A-Za-z0-9]{3,4})$")
+IMG_EXTS = {"jpg", "jpeg", "png", "gif", "webp", "tif", "tiff"}
+_tl_zips = threading.local()
+MAX_OPEN_ZIPS = 6          # pr. traad - macOS tillader kun 256 aabne filer som standard
+
+
+def _zip(path):
+    """ZipFile-haandtag er IKKE traadsikre, saa hver traad har sine egne (og kun nogle faa ad gangen)."""
+    cache = getattr(_tl_zips, "c", None)
+    if cache is None:
+        cache = _tl_zips.c = {}
+    if path in cache:
+        zf = cache.pop(path)
+        cache[path] = zf                              # frisk op (LRU)
+        return zf
+    while len(cache) >= MAX_OPEN_ZIPS:
+        old = next(iter(cache))
+        cache.pop(old).close()
+    cache[path] = zipfile.ZipFile(path)
+    return cache[path]
+
+
+def scan_source(source):
+    """Gennemsoeger en mappe med eksport-zipfiler (og/eller udpakkede filer).
+    Returnerer (albums_ref, photo_json_refs, images{id: ref}). ref = (zip-sti eller None, medlemsnavn/filsti)."""
+    albums_ref, photo_json, images = None, [], {}
+
+    def handle(zp, name):
+        nonlocal albums_ref
+        base = name.rsplit("/", 1)[-1]
+        if base == "albums.json":
+            albums_ref = albums_ref or (zp, name)
+        elif PHOTO_JSON_RE.match(base):
+            photo_json.append((zp, name))
+        else:
+            m = IMG_RE.search(base)
+            if m and m.group(2).lower() in IMG_EXTS:
+                images.setdefault(m.group(1), (zp, name))
+
+    n_zips = 0
+    for dirpath, _, files in os.walk(source):
+        for fn in sorted(files):
+            path = os.path.join(dirpath, fn)
+            if fn.lower().endswith(".zip"):
+                n_zips += 1
+                try:
+                    for n in _zip(path).namelist():
+                        if not n.endswith("/"):
+                            handle(path, n)
+                except zipfile.BadZipFile:
+                    print(f"  ! {fn} er ikke en gyldig zip-fil (download den igen?)")
+            elif not fn.startswith("."):
+                handle(None, path)
+    print(f"Gennemsoegte {n_zips} zip-filer: {len(photo_json)} billed-JSON'er, {len(images)} billedfiler")
+    return albums_ref, photo_json, images
+
+
+def read_ref(ref):
+    zp, name = ref
+    if zp:
+        with _zip(zp).open(name) as fh:
+            return fh.read()
+    with open(name, "rb") as fh:
+        return fh.read()
+
+
+def extract_member(ref, dst):
+    zp, name = ref
+    if zp:
+        with _zip(zp).open(name) as src, open(dst, "wb") as out:
+            shutil.copyfileobj(src, out, 1024 * 1024)
+    else:
+        shutil.copyfile(name, dst)
+
+
+def cmd_export_metadata(args):
+    """Bygger koeen ud fra eksportens JSON-filer (titel, beskrivelse, tags, dato, album, privatliv)."""
+    conn = db_connect()
+    conn.executescript(STAGING_SQL)
+    albums_ref, photo_refs, images = scan_source(args.source)
+    if not albums_ref:
+        sys.exit("Fandt ingen albums.json. Peg --source paa mappen med ALLE eksport-zipfilerne.")
+    if not photo_refs:
+        sys.exit("Fandt ingen photo_*.json. Er konto-data-zippen (den med JSON-filerne) i mappen?")
+
+    albums = json.loads(read_ref(albums_ref).decode("utf-8"))["albums"]
+    excluded = {}
+    for a in albums:
+        if a["id"] in EXCLUDED_ALBUM_IDS:
+            excluded[a["id"]] = "fast liste (dit eget valg)"
+        elif EXCLUDE_TITLE_RE.search(a.get("title", "")) or EXCLUDE_TITLE_RE.search(a.get("description", "")):
+            excluded[a["id"]] = 'titel/beskrivelse indeholder "ikke mine"'
+    for aid in EXCLUDED_ALBUM_IDS:
+        if aid not in excluded:
+            print(f"  ! udelukket album {aid} findes ikke i albums.json - er det det rigtige eksport?")
+    excluded_photos, album_photo_ids = {}, set()
+    for a in albums:
+        album_photo_ids.update(a.get("photos", []))
+        if a["id"] in excluded:
+            for pid in a.get("photos", []):
+                excluded_photos[str(pid)] = a["id"]
+    print(f"{len(albums)} albums, heraf {len(excluded)} udelukket:")
+    for a in albums:
+        if a["id"] in excluded:
+            print(f"   x  {a['title']!r} [{a['id']}]  {a['photo_count']} billeder - {excluded[a['id']]}")
+    print(f"   {len(excluded_photos)} billeder er spaerret (uanset om de ogsaa ligger i andre albums)")
+
+    conn.execute("DELETE FROM flickr_excluded")
+    conn.executemany("INSERT INTO flickr_excluded(photo_id, album_flickr_id) VALUES (?, ?)", list(excluded_photos.items()))
+    for a in albums:
+        conn.execute(
+            """INSERT INTO flickr_albums(flickr_id, title, description, photo_count, excluded, exclude_reason)
+               VALUES (?, ?, ?, ?, ?, ?)
+               ON CONFLICT(flickr_id) DO UPDATE SET title=excluded.title, description=excluded.description,
+                 photo_count=excluded.photo_count, excluded=excluded.excluded, exclude_reason=excluded.exclude_reason""",
+            (a["id"], a.get("title", ""), a.get("description", ""), int(a.get("photo_count") or 0),
+             1 if a["id"] in excluded else 0, excluded.get(a["id"])))
+    conn.commit()
+
+    normalize_tags = Ctx.app.normalize_tags
+    seen, private, skipped_excl, queued = set(), 0, 0, 0
+    for i, ref in enumerate(photo_refs, 1):
+        d = json.loads(read_ref(ref).decode("utf-8"))
+        pid = str(d["id"])
+        seen.add(pid)
+        if d.get("privacy") != "public":
+            private += 1
+            continue
+        if pid in excluded_photos or any(al["id"] in excluded for al in d.get("albums", [])):
+            skipped_excl += 1
+            continue
+        first = next(iter(d.get("albums", [])), None)
+        album_id, album_title = (first["id"], first["title"]) if first else (None, "")
+        title = (d.get("name") or "").strip()
+        desc = (d.get("description") or "").strip()
+        tags = normalize_tags(", ".join(t["tag"] for t in d.get("tags", [])))
+        taken = (d.get("date_taken") or "")[:10]
+        if not re.match(r"^\d{4}-\d{2}-\d{2}$", taken) or taken.startswith("0000"):
+            taken = None
+        try:
+            up = calendar.timegm(time.strptime(d["date_imported"], "%Y-%m-%d %H:%M:%S"))
+        except Exception:
+            up = 0
+        cat, why = flickr_rules.classify(album_title, title, tags, desc)
+        conn.execute(
+            """INSERT INTO flickr_photos(flickr_id, title, description, tags, date_taken, date_upload,
+                   album_flickr_id, album_title, source_url, source_label, category, category_reason)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
+               ON CONFLICT(flickr_id) DO UPDATE SET title=excluded.title, description=excluded.description,
+                   tags=excluded.tags, date_taken=excluded.date_taken, date_upload=excluded.date_upload,
+                   album_flickr_id=excluded.album_flickr_id, album_title=excluded.album_title,
+                   source_url=excluded.source_url, source_label='export',
+                   category=CASE WHEN flickr_photos.status='done' THEN flickr_photos.category ELSE excluded.category END,
+                   category_reason=CASE WHEN flickr_photos.status='done' THEN flickr_photos.category_reason
+                                        ELSE excluded.category_reason END""",
+            (pid, title, desc, tags, taken, up, album_id, album_title, d.get("original"), "export", cat, why))
+        queued += 1
+        if i % 2000 == 0:
+            conn.commit()
+    conn.commit()
+
+    conn.execute("""DELETE FROM flickr_photos WHERE status != 'done'
+                    AND flickr_id IN (SELECT photo_id FROM flickr_excluded)""")
+    conn.commit()
+    if args.update_imported:
+        n = 0
+        with conn:
+            for r in conn.execute("""SELECT image_id, title, tags, description FROM flickr_photos
+                                     WHERE status='done' AND image_id IS NOT NULL""").fetchall():
+                conn.execute("UPDATE images SET title=?, tags=?, caption=? WHERE id=?",
+                             ((r["title"] or "")[:200] or "Uden titel", r["tags"], (r["description"] or "")[:2000], r["image_id"]))
+                n += 1
+        print(f"Opdaterede titel/tags/beskrivelse paa {n} allerede importerede billeder.")
+
+    missing_json = len({str(x) for x in album_photo_ids} - seen)
+    in_zip = sum(1 for pid in seen if pid in images)
+    print("\n=== Faerdig ===")
+    print(f"Billed-JSON'er: {len(seen)}   privat (springes over): {private}   udelukket (ikke mine): {skipped_excl}"
+          f"   i koeen (offentlige): {queued}")
+    print(f"Billedfiler fundet i zip-filerne: {len(images)}  (heraf til billeder i JSON'erne: {in_zip})")
+    if missing_json > 50:
+        print(f"  ! {missing_json} billed-id'er staar i albums.json men har ingen JSON-fil her - mangler du en eller flere"
+              " konto-data-zipfiler? Hent dem alle, og koer kommandoen igen (den er sikker at gentage).")
+    cmd_report(args, conn=conn)
+
+
+def cmd_images_source_check(conn, rows, index):
+    have = [r for r in rows if r["flickr_id"] in index]
+    print(f"{len(have)} af {len(rows)} ventende billeder findes i zip-filerne.")
+    if len(have) < len(rows):
+        print(f"  ({len(rows) - len(have)} mangler i zip-filerne - de bliver liggende som 'pending'. "
+              "Mangler du nogle billed-zipfiler, eller er de ikke pakket/hentet færdigt?)")
+    return have
 
 
 def local_album_id(conn, flickr_album_id):
@@ -612,6 +866,36 @@ def local_album_id(conn, flickr_album_id):
     conn.execute("UPDATE flickr_albums SET local_album_id=? WHERE flickr_id=?",
                  (cur.lastrowid, flickr_album_id))
     return cur.lastrowid
+
+
+def record_result(conn, row, res, max_attempts):
+    """Gemmer et resultat. Billede + checkpoint i EN transaktion. True hvis billedet er gemt."""
+    if res["ok"]:
+        try:
+            with conn:
+                album_id = local_album_id(conn, row["album_flickr_id"])
+                uploaded = datetime.fromtimestamp(row["date_upload"] or time.time(), timezone.utc
+                                                  ).replace(tzinfo=None).isoformat()
+                cur = conn.execute(
+                    """INSERT INTO images (title, tags, filename, thumbnail, uploaded_at, album_id,
+                           category, caption, photo_taken_date)
+                       VALUES (?,?,?,?,?,?,?,?,?)""",
+                    ((row["title"] or row["flickr_id"])[:200], row["tags"], res["filename"],
+                     res["thumbnail"], uploaded, album_id, row["category"],
+                     (row["description"] or "")[:2000], res["taken"]))
+                conn.execute(
+                    """UPDATE flickr_photos SET status='done', image_id=?, error=NULL, done_at=?
+                       WHERE flickr_id=?""",
+                    (cur.lastrowid, Ctx.app.utc_now_iso(), row["flickr_id"]))
+            return True
+        except Exception as e:                       # noqa: BLE001
+            res = {"ok": False, "error": f"DB: {e}"[:300]}
+    attempts = max_attempts if res.get("permanent") else row["attempts"] + 1
+    with conn:
+        conn.execute("UPDATE flickr_photos SET status='failed', attempts=?, error=? WHERE flickr_id=?",
+                     (attempts, res["error"], row["flickr_id"]))
+    print(f"  ! {row['flickr_id']} {row['title'][:30]!r}: {res['error']}")
+    return False
 
 
 def fmt_bytes(n):
@@ -648,75 +932,87 @@ def cmd_images(args):
         if input("Fortsaet? [j/N] ").strip().lower() not in ("j", "ja", "y", "yes"):
             return
 
+    args.workers = args.workers or (6 if args.source else 2)
     r2 = make_r2()
     GATE.base = GATE.interval = max(0.0, args.delay)
     tmp_dir = os.path.join(Ctx.data_dir, "tmp", "flickr")
     os.makedirs(tmp_dir, exist_ok=True)
     order = "date_taken, date_upload" if args.order == "taken" else "date_upload, flickr_id"
-    limit = f"LIMIT {int(args.limit)}" if args.limit else ""
+    # Med --source skal --limit gælde EFTER at have fundet de billeder der faktisk ligger i zip-filerne
+    limit = f"LIMIT {int(args.limit)}" if (args.limit and not args.source) else ""
     rows = conn.execute(f"SELECT * FROM flickr_photos WHERE {where} ORDER BY {order} {limit}",
                         (args.max_attempts,)).fetchall()
 
+    index = None
+    if args.source:
+        _, _, index = scan_source(args.source)
+        rows = cmd_images_source_check(conn, rows, index)
+        if args.limit:
+            rows = rows[:args.limit]
+        if not rows:
+            print("Intet at importere fra zip-filerne.")
+            return
     signal.signal(signal.SIGINT, lambda *_: (_stop.set(), signal.signal(signal.SIGINT, signal.default_int_handler),
                                              print("\nStopper efter nuvaerende gruppe ... (Ctrl-C igen = hard stop)")))
 
     t0 = time.time()
     ok = failed = deferred = bytes_in = bytes_out = 0
-    window = max(args.workers * 3, 4)
     total = len(rows)
-    with ThreadPoolExecutor(max_workers=args.workers) as ex:
-        for start in range(0, total, window):
-            if _stop.is_set():
-                break
-            batch = rows[start:start + window]
-            # Ekstra sikkerhedstjek lige foer upload: er noget i gruppen spaerret?
-            ids = [b["flickr_id"] for b in batch]
-            blocked = {r[0] for r in conn.execute(
-                f"SELECT photo_id FROM flickr_excluded WHERE photo_id IN ({','.join('?' * len(ids))})", ids)}
-            batch = [b for b in batch if b["flickr_id"] not in blocked]
-            results = list(ex.map(lambda b: process_one(b, r2, tmp_dir), batch))   # bevarer raekkefoelgen
-            for row, res in zip(batch, results):
-                if res.get("deferred"):
-                    deferred += 1
-                    continue
-                if res["ok"]:
-                    try:
-                        with conn:                  # EN transaktion: billede + checkpoint
-                            album_id = local_album_id(conn, row["album_flickr_id"])
-                            uploaded = datetime.fromtimestamp(row["date_upload"] or time.time(), timezone.utc
-                                                              ).replace(tzinfo=None).isoformat()
-                            cur = conn.execute(
-                                """INSERT INTO images (title, tags, filename, thumbnail, uploaded_at, album_id,
-                                       category, caption, photo_taken_date)
-                                   VALUES (?,?,?,?,?,?,?,?,?)""",
-                                ((row["title"] or row["flickr_id"])[:200], row["tags"], res["filename"],
-                                 res["thumbnail"], uploaded, album_id, row["category"],
-                                 (row["description"] or "")[:2000], res["taken"]))
-                            conn.execute(
-                                """UPDATE flickr_photos SET status='done', image_id=?, error=NULL, done_at=?
-                                   WHERE flickr_id=?""",
-                                (cur.lastrowid, Ctx.app.utc_now_iso(), row["flickr_id"]))
-                        ok += 1
-                        bytes_in += res["bytes_in"]
-                        bytes_out += res["bytes_out"]
-                        continue
-                    except Exception as e:           # noqa: BLE001
-                        res = {"ok": False, "error": f"DB: {e}"[:300]}
-                failed += 1
-                attempts = args.max_attempts if res.get("permanent") else row["attempts"] + 1
-                with conn:
-                    conn.execute("UPDATE flickr_photos SET status='failed', attempts=?, error=? WHERE flickr_id=?",
-                                 (attempts, res["error"], row["flickr_id"]))
-                print(f"  ! {row['flickr_id']} {row['title'][:30]!r}: {res['error']}")
-            n = ok + failed
-            if not n:
+    stage = Counter()                     # samlet tid pr. trin (sekunder, summeret over alle billeder)
+    timed = 0
+    global UPLOAD_POOL
+    UPLOAD_POOL = ThreadPoolExecutor(max_workers=args.workers)
+    if index is not None:
+        work = lambda b: process_local(b, r2, tmp_dir, index[b["flickr_id"]])        # noqa: E731
+    else:
+        work = lambda b: process_one(b, r2, tmp_dir)                                  # noqa: E731
+    source_iter = iter(rows)
+    in_flight = []                        # FIFO: resultater gemmes i samme raekkefoelge som de blev sendt af sted
+    max_in_flight = max(args.workers * 3, 4)
+
+    def submit_next(ex):
+        for b in source_iter:
+            # Sikkerhedstjek lige foer behandling: er billedet spaerret ('ikke mine')?
+            if conn.execute("SELECT 1 FROM flickr_excluded WHERE photo_id=?", (b["flickr_id"],)).fetchone():
                 continue
-            el = time.time() - t0
-            rate = n / el if el else 0
-            eta = (total - n) / rate if rate else 0
-            saved = (1 - bytes_out / bytes_in) * 100 if bytes_in else 0
-            print(f"[{n}/{total}] ok={ok} fejl={failed}  hentet {fmt_bytes(bytes_in)} -> R2 {fmt_bytes(bytes_out)}"
-                  f" (-{saved:.0f}%)  {rate * 60:.0f}/min  ca. {eta / 3600:.1f} t tilbage", flush=True)
+            in_flight.append((b, ex.submit(work, b)))
+            return True
+        return False
+
+    with ThreadPoolExecutor(max_workers=args.workers) as ex:
+        while len(in_flight) < max_in_flight and not _stop.is_set() and submit_next(ex):
+            pass
+        done_count = 0
+        while in_flight:
+            row, fut = in_flight.pop(0)
+            res = fut.result()
+            if not _stop.is_set():
+                submit_next(ex)           # hold koeen fyldt, saa ingen traad venter paa de andre
+            if res.get("deferred"):
+                deferred += 1
+                continue
+            if record_result(conn, row, res, args.max_attempts):
+                ok += 1
+                bytes_in += res["bytes_in"]
+                bytes_out += res["bytes_out"]
+                stage.update(res.get("t", {}))
+                timed += 1
+            else:
+                failed += 1
+            done_count += 1
+            n = ok + failed
+            if n and (n % args.report_every == 0 or not in_flight):
+                el = time.time() - t0
+                rate = n / el if el else 0
+                eta = (total - n) / rate if rate else 0
+                saved = (1 - bytes_out / bytes_in) * 100 if bytes_in else 0
+                print(f"[{n}/{total}] ok={ok} fejl={failed}  hentet {fmt_bytes(bytes_in)} -> R2 {fmt_bytes(bytes_out)}"
+                      f" (-{saved:.0f}%)  {rate * 60:.0f}/min  ca. {eta / 3600:.1f} t tilbage", flush=True)
+                if timed and (n % (args.report_every * 4) == 0 or not in_flight):
+                    parts = ", ".join(f"{k} {v / timed:.2f}s" for k, v in stage.items())
+                    print(f"      snit pr. billede (pr. traad): {parts}", flush=True)
+    UPLOAD_POOL.shutdown(wait=True)
+    UPLOAD_POOL = None
 
     print(f"\nStoppet. ok={ok}, fejl={failed}, udskudt={deferred}." +
           ("  Koer samme kommando igen for at fortsaette." if _stop.is_set() or failed else ""))
@@ -774,6 +1070,55 @@ def cmd_purge_excluded(args):
     print("Slettet.")
 
 
+FL_KEY_RE = re.compile(r"^(uploads|thumbnails)/fl\d+(_t)?\.[A-Za-z0-9]+$")
+
+
+def cmd_reset_import(args):
+    """Sletter ALT der er importeret fra Flickr (filer i R2, billeder, albums og koeen), saa du kan starte forfra.
+    Roerer kun filer der hedder fl<tal>.jpg / fl<tal>_t.jpg - dine egne testbilleder bliver liggende."""
+    conn = db_connect()
+    r2 = make_r2()
+    print("Lister R2 ...")
+    keys = sorted(k for k in (r2.list_keys("uploads/") | r2.list_keys("thumbnails/")) if FL_KEY_RE.match(k))
+    tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    ids = {r[0] for r in conn.execute("SELECT id FROM images WHERE filename GLOB 'fl[0-9]*'")}
+    album_ids = set()
+    if "flickr_photos" in tables:
+        ids |= {r[0] for r in conn.execute("SELECT image_id FROM flickr_photos WHERE image_id IS NOT NULL")}
+    if "flickr_albums" in tables:
+        album_ids = {r[0] for r in conn.execute("SELECT local_album_id FROM flickr_albums WHERE local_album_id IS NOT NULL")}
+    print(f"Vil slette: {len(keys)} filer i R2, {len(ids)} billeder i databasen, "
+          f"op til {len(album_ids)} albums, og hele importkoeen.")
+    print("(Billeder uden for importen, fx dine testbilleder, bliver liggende.)")
+    if not keys and not ids and not album_ids and "flickr_photos" not in tables:
+        print("Intet at slette.")
+        return
+    if not args.yes and input('Skriv SLET for at fortsaette: ').strip() != "SLET":
+        print("Afbrudt.")
+        return
+    for i, k in enumerate(keys, 1):
+        area, name = k.split("/", 1)
+        r2.delete(area, name)
+        if i % 500 == 0:
+            print(f"  slettet {i}/{len(keys)} fra R2 ...")
+    with conn:
+        for chunk in [sorted(ids)[i:i + 500] for i in range(0, len(ids), 500)]:
+            q = ",".join("?" * len(chunk))
+            conn.execute(f"DELETE FROM comments WHERE image_id IN ({q})", chunk)
+            conn.execute(f"DELETE FROM images WHERE id IN ({q})", chunk)
+        for aid in album_ids:
+            if not conn.execute("SELECT 1 FROM images WHERE album_id=? LIMIT 1", (aid,)).fetchone():
+                conn.execute("DELETE FROM albums WHERE id=?", (aid,))
+        for t in ("flickr_photos", "flickr_albums", "flickr_excluded"):
+            conn.execute(f"DROP TABLE IF EXISTS {t}")
+        if conn.execute("SELECT COUNT(*) FROM images").fetchone()[0] == 0:
+            conn.execute("DELETE FROM sqlite_sequence WHERE name='images'")
+    conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+    conn.execute("VACUUM")
+    left = conn.execute("SELECT COUNT(*) FROM images").fetchone()[0]
+    print(f"Faerdig. Billeder tilbage i databasen: {left} (dine egne). Start forfra med export-metadata.")
+
+
 def cmd_verify(args):
     conn = db_connect()
     r2 = make_r2()
@@ -826,7 +1171,9 @@ def main():
     m.set_defaults(fn=cmd_metadata)
 
     i = sub.add_parser("images", help="fase 2: download, komprimer, upload til R2")
-    i.add_argument("--workers", type=int, default=2, help="samtidige billeder (standard 2)")
+    i.add_argument("--workers", type=int, default=None,
+                   help="samtidige billeder (standard: 6 fra zip-filer, 2 fra Flickrs CDN)")
+    i.add_argument("--report-every", type=int, default=25, help="skriv status for hver N billeder (standard 25)")
     i.add_argument("--delay", type=float, default=1.5,
                    help="mindste sekunder mellem start af to downloads (standard 1.5 = max ca. 40/min). "
                         "Stiger automatisk ved 429.")
@@ -836,13 +1183,24 @@ def main():
     i.add_argument("--max-attempts", type=int, default=5)
     i.add_argument("--retry-failed", action="store_true", help="nulstil fejltaeller og proev alle fejlede igen")
     i.add_argument("--yes", action="store_true", help="spoerg ikke om bekraeftelse")
+    i.add_argument("--source", help="mappe med Flickr-eksportens zip-filer: laes billederne derfra i stedet for at "
+                                    "hente fra Flickrs CDN (ingen hastighedsgraense). Brug ogsaa --workers 4")
     i.set_defaults(fn=cmd_images)
+
+    e = sub.add_parser("export-metadata", help="fase 1 fra Flickr-eksport: titler, tags, albums, privatliv")
+    e.add_argument("--source", required=True, help="mappe med ALLE eksport-zipfilerne")
+    e.add_argument("--update-imported", action="store_true",
+                   help="opdater ogsaa titel/tags/beskrivelse paa billeder der allerede er importeret")
+    e.set_defaults(fn=cmd_export_metadata)
 
     for name, fn, h in (("report", cmd_report, "vis status og kategorier"),
                         ("reclassify", cmd_reclassify, "koer kategori-reglerne igen"),
                         ("verify", cmd_verify, "tjek at alt ligger i R2"),
                         ("push-db", cmd_push_db, "laeg databasen i R2 til flytning til Fly")):
         sub.add_parser(name, help=h).set_defaults(fn=fn)
+    r = sub.add_parser("reset-import", help="slet ALT importeret fra Flickr (R2 + database) og start forfra")
+    r.add_argument("--yes", action="store_true")
+    r.set_defaults(fn=cmd_reset_import)
     p = sub.add_parser("purge-excluded", help="slet importerede billeder fra udelukkede albums")
     p.add_argument("--yes", action="store_true")
     p.set_defaults(fn=cmd_purge_excluded)

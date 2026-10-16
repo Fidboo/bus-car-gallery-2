@@ -389,3 +389,35 @@ def test_photo_below_limit_keeps_its_resolution(appmod, monkeypatch):
     _, path = _stored(appmod, c, _noisy_jpeg((2400, 1600)), "ok.jpg")
     with Image.open(path) as out:
         assert out.size == (2400, 1600)
+
+
+def test_album_search_filters_by_name(appmod):
+    c = appmod.app.test_client()
+    login(c)
+    for name in ("Norway Trip 2024", "Greenland 2023", "Norway Winter"):
+        with c.session_transaction() as s:
+            token = s["_csrf"]
+        assert c.post("/albums/new", data={"name": name, "csrf_token": token}).status_code == 302
+
+    def names(html):
+        return [n for n in ("Norway Trip 2024", "Greenland 2023", "Norway Winter")
+                if f'<div class="card-title">{n}</div>' in html]
+
+    # no query -> everything, and no "Clear" link
+    html = c.get("/albums").get_data(as_text=True)
+    assert len(names(html)) == 3 and "Clear" not in html
+
+    # case-insensitive, partial words, like the category search
+    html = c.get("/albums?q=NORW").get_data(as_text=True)
+    assert names(html) == ["Norway Trip 2024", "Norway Winter"]
+    assert "2 results for" in html and "Clear" in html
+
+    # several words: every word must match
+    html = c.get("/albums?q=norway+2024").get_data(as_text=True)
+    assert names(html) == ["Norway Trip 2024"]
+    assert "1 result for" in html
+
+    # nothing found -> friendly message, query kept in the box
+    html = c.get("/albums?q=zzz").get_data(as_text=True)
+    assert names(html) == [] and 'No albums match "zzz"' in html
+    assert 'value="zzz"' in html

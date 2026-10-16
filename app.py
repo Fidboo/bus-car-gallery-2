@@ -853,8 +853,17 @@ def delete_comment(comment_id):
 # ---------------------------------------------------------------------------
 @app.route("/albums")
 def albums_list():
+    # Same search behaviour as the category pages: every word must match
+    # (case-insensitive, partial words allowed).
+    query = request.args.get("q", "").strip()
+    where = ["1 = 1"]
+    params = []
+    for term in query.lower().split():
+        where.append("LOWER(albums.name) LIKE ?")
+        params.append(f"%{term}%")
+
     conn = get_db()
-    albums = conn.execute("""
+    albums = conn.execute(f"""
         SELECT albums.*,
                COUNT(images.id) AS photo_count,
                (SELECT thumbnail FROM images
@@ -865,11 +874,12 @@ def albums_list():
                 ORDER BY images.id DESC LIMIT 1) AS cover_filename
         FROM albums
         LEFT JOIN images ON images.album_id = albums.id
+        WHERE {" AND ".join(where)}
         GROUP BY albums.id
         ORDER BY albums.name COLLATE NOCASE
-    """).fetchall()
+    """, params).fetchall()
     conn.close()
-    return render_template("albums.html", albums=albums)
+    return render_template("albums.html", albums=albums, query=query)
 
 
 @app.route("/albums/new", methods=["POST"])

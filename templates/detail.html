@@ -83,23 +83,58 @@
 
 <div id="lightbox" class="lightbox" onclick="closeLightbox()">
     <span class="lightbox-close" onclick="closeLightbox()">&times;</span>
-    <img id="lightboxImg" src="" alt="">
+    <img id="lightboxImg" src="" alt="" draggable="false" onclick="toggleLightboxZoom(event)">
 </div>
 
 <script>
+var lightboxZoomed = false;
+var lightboxBase = null;   // the photo's on-screen box while NOT zoomed
+
 function openLightbox() {
     var mainImg = document.getElementById('mainPhoto');
     var lightbox = document.getElementById('lightbox');
     var lightboxImg = document.getElementById('lightboxImg');
+    resetLightboxZoom();
     lightboxImg.src = mainImg.src;
     lightboxImg.alt = mainImg.alt;
     lightbox.classList.add('active');
     document.body.style.overflow = 'hidden';
 }
 function closeLightbox() {
+    resetLightboxZoom();
     document.getElementById('lightbox').classList.remove('active');
     document.body.style.overflow = '';
 }
+
+// Click 1 opens the lightbox (fit to screen). Click 2 zooms to 2x and the
+// photo follows the cursor, like Flickr. Click 3 zooms back out.
+function resetLightboxZoom() {
+    document.getElementById('lightboxImg').classList.remove('zoomed');
+    lightboxZoomed = false;
+    lightboxBase = null;
+}
+function setLightboxOrigin(clientX, clientY) {
+    if (!lightboxBase) return;
+    var fx = Math.min(1, Math.max(0, (clientX - lightboxBase.left) / lightboxBase.width));
+    var fy = Math.min(1, Math.max(0, (clientY - lightboxBase.top) / lightboxBase.height));
+    document.getElementById('lightboxImg').style.transformOrigin = (fx * 100) + '% ' + (fy * 100) + '%';
+}
+function toggleLightboxZoom(e) {
+    e.stopPropagation();   // don't let the click reach the backdrop and close the lightbox
+    if (lightboxZoomed) {
+        resetLightboxZoom();
+        return;
+    }
+    var img = document.getElementById('lightboxImg');
+    lightboxBase = img.getBoundingClientRect();
+    setLightboxOrigin(e.clientX, e.clientY);
+    lightboxZoomed = true;
+    img.classList.add('zoomed');
+}
+document.getElementById('lightbox').addEventListener('pointermove', function (e) {
+    if (lightboxZoomed) setLightboxOrigin(e.clientX, e.clientY);
+});
+window.addEventListener('resize', resetLightboxZoom);
 document.addEventListener('keydown', function (e) {
     if (e.key === 'Escape') closeLightbox();
 });

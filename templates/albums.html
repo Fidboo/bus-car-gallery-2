@@ -5,6 +5,24 @@
 <h1>Albums</h1>
 <p class="result-count">Photos grouped by trip or theme, across all categories.</p>
 
+<form class="search-bar" method="get" action="{{ url_for('albums_list') }}">
+    <input
+        type="text"
+        name="q"
+        value="{{ query }}"
+        placeholder="Search albums e.g. &quot;norway&quot; or &quot;trip 2024&quot;"
+        autofocus
+    >
+    <button type="submit">Search</button>
+    {% if query %}
+        <a class="clear-link" href="{{ url_for('albums_list') }}">Clear</a>
+    {% endif %}
+</form>
+
+{% if query %}
+<p class="result-count">{{ albums|length }} result{{ 's' if albums|length != 1 else '' }} for "{{ query }}"</p>
+{% endif %}
+
 {% if session.get('logged_in') %}
 <form class="inline-form" method="post" action="{{ url_for('create_album') }}">
         <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
@@ -31,7 +49,11 @@
 </div>
 {% else %}
 <div class="empty-state">
-    <p>No albums yet.</p>
+    {% if query %}
+        <p>No albums match "{{ query }}". Try a different word, or fewer words.</p>
+    {% else %}
+        <p>No albums yet.</p>
+    {% endif %}
 </div>
 {% endif %}
 

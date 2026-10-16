@@ -142,10 +142,12 @@ a.tag:hover{background:var(--ink);color:#fff}
 .detail-actions{display:flex;align-items:center;gap:12px;margin-top:18px;flex-wrap:wrap}
 .detail-actions form{margin:0}
 
-.lightbox{display:none;position:fixed;inset:0;background:rgba(10,10,12,.94);z-index:1000;align-items:center;justify-content:center;padding:24px;cursor:zoom-out}
+.lightbox{display:none;position:fixed;inset:0;background:rgba(10,10,12,.94);z-index:1000;align-items:center;justify-content:center;padding:24px;cursor:zoom-out;overflow:hidden}
 .lightbox.active{display:flex}
-.lightbox img{max-width:95vw;max-height:95vh;object-fit:contain;box-shadow:0 10px 50px rgba(0,0,0,.6);border-radius:4px}
-.lightbox-close{position:absolute;top:18px;right:26px;color:#fff;font-size:2.4rem;line-height:1;cursor:pointer;user-select:none;font-weight:300}
+.lightbox img{max-width:95vw;max-height:95vh;object-fit:contain;box-shadow:0 10px 50px rgba(0,0,0,.6);border-radius:4px;cursor:zoom-in;transition:transform .2s ease;will-change:transform;touch-action:none;-webkit-user-drag:none;user-select:none}
+/* 2nd click: 2x zoom. transform-origin is moved by JS so the photo follows the cursor. */
+.lightbox img.zoomed{transform:scale(2);cursor:zoom-out}
+.lightbox-close{position:absolute;top:18px;right:26px;z-index:2;color:#fff;font-size:2.4rem;line-height:1;cursor:pointer;user-select:none;font-weight:300}
 
 /* ---------- Comments ---------- */
 .comments-section{margin-top:56px;border-top:1px solid var(--ink);padding-top:8px;max-width:680px}

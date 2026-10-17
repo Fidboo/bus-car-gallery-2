@@ -30,17 +30,34 @@
         e.g. <code>bus, volvo, b10m, sweden, taken in norway</code>
     </p>
 
-    <label for="album_id">Album</label>
-    <select id="album_id" name="album_id">
-        <option value="" {% if not image['album_id'] %}selected{% endif %}>No album</option>
+    <label for="album-filter">Albums</label>
+    <input type="search" id="album-filter" placeholder="Filter albums..." autocomplete="off">
+    <div class="album-picker" id="album-picker">
         {% for album in albums %}
-            <option value="{{ album['id'] }}" {% if image['album_id'] == album['id'] %}selected{% endif %}>{{ album['name'] }}</option>
+            <label class="album-option">
+                <input type="checkbox" name="album_ids" value="{{ album['id'] }}"
+                       {% if album['id'] in selected_album_ids %}checked{% endif %}>
+                {{ album['name'] }}
+            </label>
         {% endfor %}
-    </select>
+        {% if not albums %}<p class="hint">No albums yet.</p>{% endif %}
+    </div>
     <p class="hint">
-        Change this any time to move the photo to a different album.
+        A photo can be in several albums. Tick all that apply.
         <a href="{{ url_for('albums_list') }}">Manage albums</a>
     </p>
+    <script>
+    (function () {
+        var box = document.getElementById('album-filter');
+        var opts = document.querySelectorAll('#album-picker .album-option');
+        box.addEventListener('input', function () {
+            var q = box.value.trim().toLowerCase();
+            opts.forEach(function (o) {
+                o.style.display = (!q || o.textContent.toLowerCase().indexOf(q) !== -1) ? '' : 'none';
+            });
+        });
+    })();
+    </script>
 
     <label for="photo">Replace photo file (optional)</label>
     <input type="file" id="photo" name="photo" accept="image/png, image/jpeg, image/gif, image/webp">

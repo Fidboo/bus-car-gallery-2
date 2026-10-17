@@ -485,3 +485,8 @@ code{background:var(--tile);padding:1px 6px;border-radius:4px}
     padding: 3px 6px;
     font-size: 0.85rem;
 }
+
+/* Album picker on the edit page (a photo can be in several albums) */
+.album-picker{max-height:240px;overflow:auto;border:1px solid var(--line);border-radius:8px;padding:8px 12px;margin:6px 0 4px}
+.album-option{display:flex;align-items:center;gap:8px;padding:3px 0;font-weight:400;cursor:pointer}
+.album-option input{width:auto;margin:0}

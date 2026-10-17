@@ -211,6 +211,27 @@ def init_db():
     if not column_exists(conn, "images", "views"):
         conn.execute("ALTER TABLE images ADD COLUMN views INTEGER NOT NULL DEFAULT 0")
 
+    # A photo can belong to several albums. image_albums is the source of
+    # truth; images.album_id stays as the "main album" (first one), which keeps
+    # the upload form and older data working. The backfill only runs when the
+    # table is first created, so later edits are never overwritten.
+    had_image_albums = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'image_albums'"
+    ).fetchone() is not None
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS image_albums (
+            image_id INTEGER NOT NULL REFERENCES images(id) ON DELETE CASCADE,
+            album_id INTEGER NOT NULL REFERENCES albums(id) ON DELETE CASCADE,
+            PRIMARY KEY (image_id, album_id)
+        )
+    """)
+    if not had_image_albums:
+        conn.execute(
+            "INSERT OR IGNORE INTO image_albums (image_id, album_id) "
+            "SELECT id, album_id FROM images WHERE album_id IS NOT NULL"
+        )
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_image_albums_album ON image_albums(album_id, image_id)")
+
     # Indexes keep category pages, album pages, prev/next and comment lookups
     # fast when the collection grows to tens of thousands of photos.
     conn.execute("CREATE INDEX IF NOT EXISTS idx_images_category_id ON images(category, id)")
@@ -492,6 +513,29 @@ def parse_album_id(raw_value):
         return None
 
 
+def parse_album_ids(conn, raw_values):
+    """Turn the album checkboxes into a de-duplicated list of ids that exist."""
+    ids = []
+    for raw in raw_values or []:
+        album_id = parse_album_id(raw)
+        if album_id is not None and album_id not in ids:
+            ids.append(album_id)
+    if not ids:
+        return []
+    marks = ",".join("?" * len(ids))
+    existing = {r["id"] for r in conn.execute(f"SELECT id FROM albums WHERE id IN ({marks})", ids)}
+    return [i for i in ids if i in existing]
+
+
+def get_albums_for_image(conn, image_id):
+    return conn.execute(
+        "SELECT albums.id, albums.name FROM image_albums "
+        "JOIN albums ON albums.id = image_albums.album_id "
+        "WHERE image_albums.image_id = ? ORDER BY albums.name COLLATE NOCASE",
+        (image_id,),
+    ).fetchall()
+
+
 # --- Searching / browsing ---------------------------------------------------
 IMAGES_FROM = "FROM images LEFT JOIN albums ON images.album_id = albums.id"
 
@@ -504,13 +548,18 @@ def build_filters(category=None, album_id=None, query=None):
         where.append("images.category = ?")
         params.append(category)
     if album_id:
-        where.append("images.album_id = ?")
+        where.append(
+            "EXISTS (SELECT 1 FROM image_albums ia "
+            "WHERE ia.image_id = images.id AND ia.album_id = ?)"
+        )
         params.append(album_id)
     if query:
         for term in query.lower().split():
             where.append(
                 "(LOWER(images.title) LIKE ? OR LOWER(images.tags) LIKE ? "
-                "OR LOWER(images.caption) LIKE ? OR LOWER(albums.name) LIKE ?)"
+                "OR LOWER(images.caption) LIKE ? OR EXISTS ("
+                "SELECT 1 FROM image_albums ia JOIN albums a ON a.id = ia.album_id "
+                "WHERE ia.image_id = images.id AND LOWER(a.name) LIKE ?))"
             )
             params.extend([f"%{term}%"] * 4)
     return " AND ".join(where), params
@@ -724,7 +773,9 @@ def category_view(slug):
     conn = get_db()
     total = conn.execute(f"SELECT COUNT(*) {IMAGES_FROM} WHERE {where}", params).fetchone()[0]
     rows = conn.execute(
-        f"SELECT images.*, albums.name AS album_name {IMAGES_FROM} WHERE {where} "
+        "SELECT images.*, albums.name AS album_name, "
+        "(SELECT COUNT(*) FROM image_albums ia WHERE ia.image_id = images.id) AS album_total "
+        f"{IMAGES_FROM} WHERE {where} "
         "ORDER BY images.id DESC LIMIT ? OFFSET ?",
         params + [PER_PAGE, offset],
     ).fetchall()
@@ -781,11 +832,13 @@ def image_detail(image_id):
     comments = conn.execute(
         "SELECT * FROM comments WHERE image_id = ? ORDER BY created_at ASC", (image_id,)
     ).fetchall()
+    image_albums = get_albums_for_image(conn, image_id)
     conn.close()
 
     return render_template(
         "detail.html",
         image=row,
+        image_albums=image_albums,
         comments=comments,
         prev_id=prev_id,
         next_id=next_id,
@@ -865,15 +918,17 @@ def albums_list():
     conn = get_db()
     albums = conn.execute(f"""
         SELECT albums.*,
-               COUNT(images.id) AS photo_count,
-               (SELECT thumbnail FROM images
-                WHERE images.album_id = albums.id
-                ORDER BY images.id DESC LIMIT 1) AS cover_thumb,
-               (SELECT filename FROM images
-                WHERE images.album_id = albums.id
-                ORDER BY images.id DESC LIMIT 1) AS cover_filename
+               COUNT(image_albums.image_id) AS photo_count,
+               (SELECT images.thumbnail FROM image_albums x
+                JOIN images ON images.id = x.image_id
+                WHERE x.album_id = albums.id
+                ORDER BY x.image_id DESC LIMIT 1) AS cover_thumb,
+               (SELECT images.filename FROM image_albums x
+                JOIN images ON images.id = x.image_id
+                WHERE x.album_id = albums.id
+                ORDER BY x.image_id DESC LIMIT 1) AS cover_filename
         FROM albums
-        LEFT JOIN images ON images.album_id = albums.id
+        LEFT JOIN image_albums ON image_albums.album_id = albums.id
         WHERE {" AND ".join(where)}
         GROUP BY albums.id
         ORDER BY albums.name COLLATE NOCASE
@@ -911,7 +966,9 @@ def album_detail(album_id):
         conn.close()
         abort(404)
     images = conn.execute(
-        "SELECT * FROM images WHERE album_id = ? ORDER BY id DESC", (album_id,)
+        "SELECT images.* FROM images "
+        "JOIN image_albums ia ON ia.image_id = images.id "
+        "WHERE ia.album_id = ? ORDER BY images.id DESC", (album_id,)
     ).fetchall()
     conn.close()
     return render_template("album_detail.html", album=album, images=images)
@@ -939,7 +996,11 @@ def rename_album(album_id):
 @login_required
 def delete_album(album_id):
     conn = get_db()
-    conn.execute("UPDATE images SET album_id = NULL WHERE album_id = ?", (album_id,))
+    conn.execute("DELETE FROM image_albums WHERE album_id = ?", (album_id,))
+    # A photo whose main album was this one gets another of its albums (or none).
+    conn.execute(
+        "UPDATE images SET album_id = (SELECT MIN(album_id) FROM image_albums "
+        "WHERE image_albums.image_id = images.id) WHERE album_id = ?", (album_id,))
     conn.execute("DELETE FROM albums WHERE id = ?", (album_id,))
     conn.commit()
     conn.close()
@@ -1133,6 +1194,11 @@ def save_new_image(conn, file, title, caption, tags, category, album_id):
              utc_now_iso(), album_id, category, caption,
              info["photo_taken_date"]),
         )
+        if album_id is not None:
+            conn.execute(
+                "INSERT OR IGNORE INTO image_albums (image_id, album_id) VALUES (?, ?)",
+                (cur.lastrowid, album_id),
+            )
         conn.commit()
     except Exception:
         delete_stored_files(info["filename"], info["thumbnail"])
@@ -1213,7 +1279,9 @@ def edit_image(image_id):
         caption = request.form.get("caption", "").strip()
         tags = normalize_tags(request.form.get("tags", ""))
         category = request.form.get("category", "").strip()
-        album_id = parse_album_id(request.form.get("album_id"))
+        album_ids = parse_album_ids(conn, request.form.getlist("album_ids"))
+        # keep the current main album if it is still selected, otherwise the first one
+        album_id = row["album_id"] if row["album_id"] in album_ids else (album_ids[0] if album_ids else None)
         file = request.files.get("photo")
 
         if not title:
@@ -1249,6 +1317,11 @@ def edit_image(image_id):
             (title, caption, tags, category, filename, thumbnail, album_id,
              photo_taken_date, image_id),
         )
+        conn.execute("DELETE FROM image_albums WHERE image_id = ?", (image_id,))
+        conn.executemany(
+            "INSERT INTO image_albums (image_id, album_id) VALUES (?, ?)",
+            [(image_id, a) for a in album_ids],
+        )
         conn.commit()
         conn.close()
 
@@ -1260,8 +1333,10 @@ def edit_image(image_id):
         return redirect(url_for("image_detail", image_id=image_id))
 
     albums = get_all_albums(conn)
+    selected_album_ids = {a["id"] for a in get_albums_for_image(conn, image_id)}
     conn.close()
-    return render_template("edit.html", image=row, albums=albums, categories=CATEGORIES)
+    return render_template("edit.html", image=row, albums=albums, categories=CATEGORIES,
+                           selected_album_ids=selected_album_ids)
 
 
 @app.route("/image/<int:image_id>/delete", methods=["POST"])
@@ -1271,6 +1346,7 @@ def delete_image(image_id):
     row = conn.execute("SELECT * FROM images WHERE id = ?", (image_id,)).fetchone()
     if row:
         conn.execute("DELETE FROM comments WHERE image_id = ?", (image_id,))
+        conn.execute("DELETE FROM image_albums WHERE image_id = ?", (image_id,))
         conn.execute("DELETE FROM images WHERE id = ?", (image_id,))
         conn.commit()
     conn.close()

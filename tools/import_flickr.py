@@ -16,6 +16,7 @@ Fra Flickrs eksport (zip-filer; ingen CDN-graense) - anbefalet naar Flickr bloke
 Andre kommandoer:
     reclassify        koer regelmotoren (tools/flickr_rules.py) igen
     purge-excluded    slet evt. allerede importerede billeder fra udelukkede albums
+    link-albums       laeg ALLE albums paa billederne (kraever --source)
     reset-import      slet ALT importeret fra Flickr (R2-filer, billeder, albums, koe) og start forfra
 
 Indstillinger (i .env eller som miljoevariabler):
@@ -830,10 +831,19 @@ def cmd_export_metadata(args):
 
 def cmd_images_source_check(conn, rows, index):
     have = [r for r in rows if r["flickr_id"] in index]
-    print(f"{len(have)} af {len(rows)} ventende billeder findes i zip-filerne.")
+    status = {r[0]: r[1] for r in conn.execute("SELECT flickr_id, status FROM flickr_photos")}
+    excluded = {r[0] for r in conn.execute("SELECT photo_id FROM flickr_excluded")}
+    done_in = sum(1 for i in index if status.get(i) == "done")
+    excl_in = sum(1 for i in index if i in excluded)
+    other_skipped = sum(1 for i in index if i not in status and i not in excluded)
+    other = len(index) - done_in - excl_in - other_skipped - len(have)
+    print(f"Billedfiler i zip-filerne: {len(index)} = {done_in} allerede importeret + {len(have)} nye"
+          f" + {excl_in} 'ikke mine' (springes over; i alt {len(excluded)} paa listen)"
+          f" + {other_skipped} andre private / uden metadata (springes over)"
+          + (f" + {other} fejlede for mange gange" if other > 0 else ""))
     if len(have) < len(rows):
-        print(f"  ({len(rows) - len(have)} mangler i zip-filerne - de bliver liggende som 'pending'. "
-              "Mangler du nogle billed-zipfiler, eller er de ikke pakket/hentet færdigt?)")
+        print(f"Der er {len(rows) - len(have)} ventende billeder mere i koeen. De ligger i zip-filer, "
+              "du endnu ikke har lagt i mappen.")
     return have
 
 
@@ -883,6 +893,9 @@ def record_result(conn, row, res, max_attempts):
                     ((row["title"] or row["flickr_id"])[:200], row["tags"], res["filename"],
                      res["thumbnail"], uploaded, album_id, row["category"],
                      (row["description"] or "")[:2000], res["taken"]))
+                if album_id is not None:                 # hovedalbummet; resten kommer med 'link-albums'
+                    conn.execute("INSERT OR IGNORE INTO image_albums(image_id, album_id) VALUES (?, ?)",
+                                 (cur.lastrowid, album_id))
                 conn.execute(
                     """UPDATE flickr_photos SET status='done', image_id=?, error=NULL, done_at=?
                        WHERE flickr_id=?""",
@@ -1119,6 +1132,53 @@ def cmd_reset_import(args):
     print(f"Faerdig. Billeder tilbage i databasen: {left} (dine egne). Start forfra med export-metadata.")
 
 
+def cmd_link_albums(args):
+    """Laegger ALLE albums paa de importerede billeder (ikke kun det foerste).
+    Laeser albums.json fra eksporten, opretter manglende albums og fylder tabellen image_albums.
+    Sikker at koere igen - der oprettes aldrig dubletter. Udelukkede albums og billeder rores ikke."""
+    conn = db_connect()
+    conn.executescript(STAGING_SQL)
+    albums_ref, _, _ = scan_source(args.source)
+    if not albums_ref:
+        sys.exit("Fandt ingen albums.json. Peg --source paa mappen med eksport-zipfilerne.")
+    albums = json.loads(read_ref(albums_ref).decode("utf-8"))["albums"]
+    done = {r["flickr_id"]: r["image_id"] for r in conn.execute(
+        "SELECT flickr_id, image_id FROM flickr_photos WHERE status='done' AND image_id IS NOT NULL")}
+    print(f"{len(done)} importerede billeder, {len(albums)} albums i eksporten")
+
+    created = skipped_excl = skipped_empty = 0
+    before = conn.total_changes
+    with conn:
+        for a in albums:
+            if (a["id"] in EXCLUDED_ALBUM_IDS or EXCLUDE_TITLE_RE.search(a.get("title", ""))
+                    or EXCLUDE_TITLE_RE.search(a.get("description", ""))):
+                skipped_excl += 1
+                continue
+            image_ids = [done[str(p)] for p in a.get("photos", []) if str(p) in done]
+            if not image_ids:
+                skipped_empty += 1                 # ingen importerede billeder -> intet tomt album
+                continue
+            conn.execute(
+                """INSERT OR IGNORE INTO flickr_albums(flickr_id, title, description, photo_count, excluded)
+                   VALUES (?, ?, ?, ?, 0)""",
+                (a["id"], a.get("title", ""), a.get("description", ""), int(a.get("photo_count") or 0)))
+            had = conn.execute("SELECT local_album_id FROM flickr_albums WHERE flickr_id=?", (a["id"],)).fetchone()[0]
+            local = local_album_id(conn, a["id"])
+            if local is None:
+                continue
+            if not had:
+                created += 1
+            conn.executemany("INSERT OR IGNORE INTO image_albums(image_id, album_id) VALUES (?, ?)",
+                             [(i, local) for i in image_ids])
+    multi = conn.execute("""SELECT COUNT(*) FROM (SELECT image_id FROM image_albums
+                            GROUP BY image_id HAVING COUNT(*) > 1)""").fetchone()[0]
+    total = conn.execute("SELECT COUNT(*) FROM image_albums").fetchone()[0]
+    print(f"Nye albums oprettet: {created}   albums uden importerede billeder (sprunget over): {skipped_empty}"
+          f"   udelukkede albums: {skipped_excl}")
+    print(f"Album-tilknytninger i alt: {total}   billeder i mere end ét album: {multi}")
+    print("Udeladte billeder (private/udelukkede) har ingen tilknytning, saa de kan ikke komme med her.")
+
+
 def cmd_verify(args):
     conn = db_connect()
     r2 = make_r2()
@@ -1201,6 +1261,9 @@ def main():
     r = sub.add_parser("reset-import", help="slet ALT importeret fra Flickr (R2 + database) og start forfra")
     r.add_argument("--yes", action="store_true")
     r.set_defaults(fn=cmd_reset_import)
+    la = sub.add_parser("link-albums", help="laeg ALLE albums paa de importerede billeder (fra albums.json)")
+    la.add_argument("--source", required=True, help="mappen med eksport-zipfilerne (der skal bruges albums.json)")
+    la.set_defaults(fn=cmd_link_albums)
     p = sub.add_parser("purge-excluded", help="slet importerede billeder fra udelukkede albums")
     p.add_argument("--yes", action="store_true")
     p.set_defaults(fn=cmd_purge_excluded)

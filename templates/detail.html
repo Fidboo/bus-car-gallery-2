@@ -43,8 +43,10 @@
             <p class="caption">{{ image['caption'] }}</p>
         {% endif %}
 
-        {% if image['album_name'] %}
-            <p class="album-link">Album: <a href="{{ url_for('album_detail', album_id=image['album_id']) }}">{{ image['album_name'] }}</a></p>
+        {% if image_albums %}
+            <p class="album-link">{{ 'Albums' if image_albums|length > 1 else 'Album' }}:
+                {% for a in image_albums %}<a href="{{ url_for('album_detail', album_id=a['id']) }}">{{ a['name'] }}</a>{% if not loop.last %}, {% endif %}{% endfor %}
+            </p>
         {% endif %}
 
         {% if image['tags'] %}

@@ -421,3 +421,74 @@ def test_album_search_filters_by_name(appmod):
     html = c.get("/albums?q=zzz").get_data(as_text=True)
     assert names(html) == [] and 'No albums match "zzz"' in html
     assert 'value="zzz"' in html
+
+
+def test_views_count_once_per_visitor_and_skip_bots_and_owner(appmod):
+    import time
+    owner = appmod.app.test_client()
+    login(owner)
+    image_id = upload(owner, title="Counted").get_json()["id"]
+
+    def views():
+        conn = appmod.get_db()
+        n = conn.execute("SELECT views FROM images WHERE id = ?", (image_id,)).fetchone()[0]
+        conn.close()
+        return n
+
+    def site_views():
+        conn = appmod.get_db()
+        n = conn.execute("SELECT value FROM site_stats WHERE key = 'total_visits'").fetchone()[0]
+        conn.close()
+        return n
+
+    # the owner looking at their own photos is not counted
+    owner.get(f"/image/{image_id}")
+    assert views() == 0
+
+    ua = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0) Chrome/120"}
+    visitor = appmod.app.test_client()
+    visitor.get(f"/image/{image_id}", headers=ua)
+    site_after_first = site_views()
+    assert views() == 1 and site_after_first >= 1
+
+    # reloading / opening it again does not count - neither photo nor page
+    for _ in range(3):
+        visitor.get(f"/image/{image_id}", headers=ua)
+    assert views() == 1 and site_views() == site_after_first
+
+    # a different photo/page from the same visitor does count
+    other = upload(owner, title="Other", name="b.jpg").get_json()["id"]
+    visitor.get(f"/image/{other}", headers=ua)
+    assert site_views() == site_after_first + 1
+
+    # a visitor without the cookie (new browser) counts as a new person
+    appmod.app.test_client().get(f"/image/{image_id}", headers=ua)
+    assert views() == 2
+
+    # search engines and scripts are never counted, nor are HEAD requests
+    for agent in ("Googlebot/2.1 (+http://www.google.com/bot.html)", "python-requests/2.31", ""):
+        appmod.app.test_client().get(f"/image/{image_id}", headers={"User-Agent": agent})
+    appmod.app.test_client().head(f"/image/{image_id}", headers=ua)
+    assert views() == 2
+
+    # after 24 hours the same visitor counts again
+    old = int(time.time()) - appmod.VIEW_WINDOW - 60
+    stale = appmod.app.test_client()
+    stale.set_cookie(appmod.VIEW_COOKIE, f"i{image_id}.{old}")
+    stale.get(f"/image/{image_id}", headers=ua)
+    assert views() == 3
+
+
+def test_view_cookie_stays_small_and_ignores_garbage(appmod):
+    owner = appmod.app.test_client()
+    login(owner)
+    ua = {"User-Agent": "Mozilla/5.0 Chrome/120"}
+    c = appmod.app.test_client()
+    c.set_cookie(appmod.VIEW_COOKIE, ",,x,.5,i1.abc,%s" % ("z" * 50 + ".1"))
+    assert c.get("/", headers=ua).status_code == 200
+    ids = [upload(owner, title=f"t{i}", name=f"{i}.jpg", data=make_jpeg((400, 300))).get_json()["id"]
+           for i in range(3)]
+    for i in ids:
+        c.get(f"/image/{i}", headers=ua)
+    cookie = c.get_cookie(appmod.VIEW_COOKIE).value
+    assert len(cookie) < 3000

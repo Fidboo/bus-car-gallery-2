@@ -6,6 +6,7 @@ import secrets
 import sqlite3
 import time
 import uuid
+import zlib
 from collections import Counter
 from datetime import datetime, timezone
 from functools import wraps
@@ -13,7 +14,7 @@ from urllib.parse import urlparse
 
 from flask import (
     Flask, render_template, request, redirect, url_for,
-    session, send_from_directory, flash, abort, jsonify
+    session, send_from_directory, flash, abort, jsonify, g
 )
 from werkzeug.security import check_password_hash, generate_password_hash
 from werkzeug.utils import secure_filename
@@ -697,14 +698,72 @@ def inject_globals():
     }
 
 
+# --- View counting ----------------------------------------------------------
+# One view per visitor per photo/page per 24 hours, remembered in a small
+# cookie ("seen"). Reloading a page does not raise the numbers. Not counted:
+# the owner (logged in), search engines/bots, and non-GET requests (HEAD etc.).
+VIEW_COOKIE = "seen"
+VIEW_WINDOW = 24 * 3600          # seconds before the same visitor counts again
+VIEW_COOKIE_MAX_ENTRIES = 120    # keeps the cookie well below the 4 KB browser limit
+BOT_WORDS = ("bot", "crawl", "spider", "slurp", "preview", "facebookexternalhit",
+             "curl", "wget", "python-requests", "headless")
+
+
+def is_countable_visitor():
+    if request.method != "GET" or session.get("logged_in"):
+        return False
+    ua = request.headers.get("User-Agent", "").lower()
+    return bool(ua) and not any(word in ua for word in BOT_WORDS)
+
+
+def _seen_views():
+    """{key: unix time} of what this visitor has viewed within the window."""
+    if not hasattr(g, "seen_views"):
+        seen = {}
+        now = time.time()
+        raw = request.cookies.get(VIEW_COOKIE, "")
+        for part in raw.split(",")[:VIEW_COOKIE_MAX_ENTRIES * 2]:
+            key, _, stamp = part.partition(".")
+            if not key or len(key) > 20 or not stamp.isdigit():
+                continue
+            if now - int(stamp) < VIEW_WINDOW:
+                seen[key] = int(stamp)
+        g.seen_views = seen
+    return g.seen_views
+
+
+def first_view(key):
+    """True the first time this visitor views `key` within the window. The
+    caller counts it only when this returns True."""
+    if not is_countable_visitor():
+        return False
+    seen = _seen_views()
+    if key in seen:
+        return False
+    seen[key] = int(time.time())
+    g.seen_views_changed = True
+    return True
+
+
+@app.after_request
+def remember_views(resp):
+    if getattr(g, "seen_views_changed", False):
+        newest = sorted(g.seen_views.items(), key=lambda kv: kv[1], reverse=True)
+        value = ",".join(f"{k}.{t}" for k, t in newest[:VIEW_COOKIE_MAX_ENTRIES])
+        resp.set_cookie(VIEW_COOKIE, value, max_age=VIEW_WINDOW, httponly=True,
+                        samesite="Lax", secure=not IS_DEV)
+    return resp
+
+
 @app.before_request
 def count_visit():
-    # Simple site-wide visit counter. Only counts page loads, not image/
-    # style file requests or form submissions, so it stays a meaningful
-    # "how many times has someone loaded a page" number.
-    if request.method == "GET" and not request.path.startswith(
-        ("/media", "/static", "/download", "/healthz")
-    ):
+    # Site-wide page-view counter. Only counts page loads, not image/style
+    # file requests or form submissions, and each page only once per visitor
+    # per 24 hours (see first_view).
+    if request.path.startswith(("/media", "/static", "/download", "/healthz")):
+        return
+    page_key = "p" + format(zlib.crc32(request.path.encode("utf-8")), "x")
+    if first_view(page_key):
         try:
             conn = get_db()
             conn.execute("UPDATE site_stats SET value = value + 1 WHERE key = 'total_visits'")
@@ -811,8 +870,9 @@ def image_detail(image_id):
         conn.close()
         abort(404)
 
-    conn.execute("UPDATE images SET views = views + 1 WHERE id = ?", (image_id,))
-    conn.commit()
+    if first_view(f"i{image_id}"):
+        conn.execute("UPDATE images SET views = views + 1 WHERE id = ?", (image_id,))
+        conn.commit()
 
     album_param = request.args.get("album", type=int)
     cat_param = request.args.get("cat")

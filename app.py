@@ -687,6 +687,15 @@ def add_static_version(endpoint, values):
 
 
 
+# With R2 the photos come from another host; telling the browser early lets it
+# open that connection while the page is still loading.
+if storage.kind == "r2":
+    _origin = urlparse(storage.public_base)
+    IMAGE_ORIGIN = f"{_origin.scheme}://{_origin.netloc}"
+else:
+    IMAGE_ORIGIN = ""
+
+
 @app.context_processor
 def inject_globals():
     return {
@@ -695,6 +704,7 @@ def inject_globals():
         "csrf_token": csrf_token,
         "media_url": media_url,
         "thumb_url": thumb_url,
+        "image_origin": IMAGE_ORIGIN,
     }
 
 
@@ -893,10 +903,16 @@ def image_detail(image_id):
         "SELECT * FROM comments WHERE image_id = ? ORDER BY created_at ASC", (image_id,)
     ).fetchall()
     image_albums = get_albums_for_image(conn, image_id)
+    next_full_url = None
+    if next_id:
+        nxt = conn.execute("SELECT filename FROM images WHERE id = ?", (next_id,)).fetchone()
+        if nxt:
+            next_full_url = media_url("uploads", nxt["filename"])
     conn.close()
 
     return render_template(
         "detail.html",
+        next_full_url=next_full_url,
         image=row,
         image_albums=image_albums,
         comments=comments,

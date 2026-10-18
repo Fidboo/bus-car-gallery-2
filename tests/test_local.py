@@ -492,3 +492,45 @@ def test_view_cookie_stays_small_and_ignores_garbage(appmod):
         c.get(f"/image/{i}", headers=ua)
     cookie = c.get_cookie(appmod.VIEW_COOKIE).value
     assert len(cookie) < 3000
+
+
+def test_photo_page_shows_thumbnail_first_and_prefetches_next(appmod):
+    owner = appmod.app.test_client()
+    login(owner)
+    ids = [upload(owner, title=f"p{i}", name=f"{i}.jpg", data=make_jpeg((1200, 800))).get_json()["id"]
+           for i in range(2)]
+    newer, older = ids[1], ids[0]          # newest first: "next" from the newer one is the older
+    c = appmod.app.test_client()
+    html = c.get(f"/image/{newer}?cat=bus").get_data(as_text=True)
+    stored = {}
+    conn = appmod.get_db()
+    for i in ids:
+        stored[i] = conn.execute("SELECT filename, thumbnail FROM images WHERE id=?", (i,)).fetchone()
+    conn.close()
+    with appmod.app.test_request_context():
+        full = appmod.media_url("uploads", stored[newer]["filename"])
+        thumb = appmod.thumb_url(stored[newer]["thumbnail"], stored[newer]["filename"])
+        next_full = appmod.media_url("uploads", stored[older]["filename"])
+    assert f'src="{thumb}"' in html                       # thumbnail is what paints first
+    assert f'data-full="{full}"' in html                  # full photo is swapped in afterwards
+    assert f'rel="preload" as="image" href="{full}"' in html
+    assert f'data-next="{next_full}"' in html
+    # the oldest photo has no "next", so nothing to prefetch
+    assert 'data-next="' not in c.get(f"/image/{older}?cat=bus").get_data(as_text=True)
+
+
+def test_thumbnail_cards_know_their_full_photo_and_script_is_served(appmod):
+    owner = appmod.app.test_client()
+    login(owner)
+    image_id = upload(owner, title="card", category="bus").get_json()["id"]
+    c = appmod.app.test_client()
+    conn = appmod.get_db()
+    fn = conn.execute("SELECT filename FROM images WHERE id=?", (image_id,)).fetchone()[0]
+    conn.close()
+    with appmod.app.test_request_context():
+        marker = f'data-full="{appmod.media_url("uploads", fn)}"'
+    assert marker in c.get("/category/bus").get_data(as_text=True)
+    assert marker in c.get("/").get_data(as_text=True)
+    page = c.get("/category/bus").get_data(as_text=True)
+    assert "prefetch.js" in page
+    assert c.get("/static/prefetch.js").status_code == 200

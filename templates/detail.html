@@ -14,14 +14,39 @@
 
 <div class="detail">
     <div class="detail-media">
+        {# Fast first paint: the thumbnail (already cached from the grid) shows at
+           once and is swapped for the full photo when that has loaded. The
+           preload hint starts the big download as early as possible. #}
+        <link rel="preload" as="image" href="{{ media_url('uploads', image['filename']) }}" fetchpriority="high">
         <img
             class="detail-img"
             id="mainPhoto"
-            src="{{ media_url('uploads', image['filename']) }}"
+            src="{{ thumb_url(image['thumbnail'], image['filename']) }}"
+            data-full="{{ media_url('uploads', image['filename']) }}"
+            {% if next_full_url %}data-next="{{ next_full_url }}"{% endif %}
             alt="{{ image['title'] }}"
             title="Click to view fullscreen"
             onclick="openLightbox()"
         >
+        <script>
+        (function () {
+            var img = document.getElementById('mainPhoto');
+            var full = img.getAttribute('data-full');
+            var big = new Image();
+            big.onload = function () {
+                img.src = full;
+                // With the photo on screen, quietly fetch the next one so "Next" feels instant.
+                var next = img.getAttribute('data-next');
+                var c = navigator.connection || {};
+                if (next && !c.saveData) {
+                    var l = document.createElement('link');
+                    l.rel = 'prefetch'; l.as = 'image'; l.href = next;
+                    document.head.appendChild(l);
+                }
+            };
+            big.src = full;
+        })();
+        </script>
         <div class="detail-nav">
             {% if prev_id %}
                 <a href="{{ url_for('image_detail', image_id=prev_id, cat=cat_param, q=q_param, album=album_param) }}">Previous</a>
@@ -97,7 +122,7 @@ function openLightbox() {
     var lightbox = document.getElementById('lightbox');
     var lightboxImg = document.getElementById('lightboxImg');
     resetLightboxZoom();
-    lightboxImg.src = mainImg.src;
+    lightboxImg.src = mainImg.getAttribute('data-full') || mainImg.src;
     lightboxImg.alt = mainImg.alt;
     lightbox.classList.add('active');
     document.body.style.overflow = 'hidden';

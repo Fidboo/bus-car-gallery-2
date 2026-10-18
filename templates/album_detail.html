@@ -25,7 +25,7 @@
 {% if images %}
 <div class="grid">
     {% for image in images %}
-    <a class="card" href="{{ url_for('image_detail', image_id=image['id'], album=album['id']) }}">
+    <a class="card" data-full="{{ media_url('uploads', image['filename']) }}" href="{{ url_for('image_detail', image_id=image['id'], album=album['id']) }}">
         <img src="{{ thumb_url(image['thumbnail'], image['filename']) }}" alt="{{ image['title'] }}" loading="lazy">
         <div class="card-body">
             <div class="card-title">{{ image['title'] }}</div>

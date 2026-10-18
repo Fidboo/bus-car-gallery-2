@@ -1094,14 +1094,46 @@ def cmd_reclassify(args):
     src.close()
     dst.close()
     print(f"Sikkerhedskopi: {backup}")
-    with conn:
-        for r, _, cat, why in changes:
-            if r["status"] == "done":
-                conn.execute("UPDATE images SET category=? WHERE id=?", (cat, r["image_id"]))
-            conn.execute("UPDATE flickr_photos SET category=?, category_reason=? WHERE flickr_id=?",
-                         (cat, why, r["flickr_id"]))
-    print(f"Gemt: {len(changes)} billeder fik ny kategori. Fortryd ved at kopiere sikkerhedskopien tilbage over data/gallery.db.")
+    import hashlib
+
+    def fingerprint():
+        """Fingeraftryk af ALT der peger paa billedfiler og albums - maa ikke aendre sig ved en kategori-rettelse."""
+        h = hashlib.sha1()
+        n = 0
+        for r in conn.execute("SELECT id, filename, thumbnail, album_id FROM images ORDER BY id"):
+            h.update(f"{r['id']}|{r['filename']}|{r['thumbnail']}|{r['album_id']}\n".encode())
+            n += 1
+        for r in conn.execute("SELECT image_id, album_id FROM image_albums ORDER BY image_id, album_id"):
+            h.update(f"{r[0]}:{r[1]}\n".encode())
+        return n, h.hexdigest()
+
+    before = fingerprint()
+    try:
+        with conn:
+            for r, _, cat, why in changes:
+                if r["status"] == "done":
+                    conn.execute("UPDATE images SET category=? WHERE id=?", (cat, r["image_id"]))
+                conn.execute("UPDATE flickr_photos SET category=?, category_reason=? WHERE flickr_id=?",
+                             (cat, why, r["flickr_id"]))
+            after = fingerprint()
+            if after != before:                               # burde aldrig ske - saa rulles ALT tilbage
+                raise RuntimeError("billedfiler/albums aendrede sig uventet")
+    except Exception as e:                                    # noqa: BLE001
+        print(f"STOPPET og rullet tilbage: {e}. Databasen er uaendret (sikkerhedskopi: {backup}).")
+        return
+    print(f"Gemt: {len(changes)} billeder fik ny kategori.")
+    print(f"Kontrol: {after[0]} billeder, filnavne, thumbnails og albums er UAENDREDE (kun kategorierne er rettet).")
+    print("Fortryd ved at kopiere sikkerhedskopien tilbage over data/gallery.db.")
     cmd_report(args, conn=conn)
+    # Saml ALT i selve gallery.db, saa en kopi/upload af den ene fil er komplet.
+    conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+    conn.close()
+    wal = Ctx.db_path + "-wal"
+    if os.path.exists(wal) and os.path.getsize(wal) > 0:
+        print(f"\n! {wal} indeholder stadig data - luk andre programmer der bruger databasen, og koer: "
+              f'sqlite3 {Ctx.db_path} "PRAGMA wal_checkpoint(TRUNCATE);"')
+    else:
+        print("\nDatabasen ligger samlet i EN fil (data/gallery.db) og er klar til at blive sendt til Fly.")
 
 
 def cmd_purge_excluded(args):

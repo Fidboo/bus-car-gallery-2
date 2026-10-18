@@ -1,15 +1,16 @@
-"""Regelmotor: gaet kategori (bus / car / truck / tram / train / misc) ud fra
-albumnavn, titel, tags og beskrivelse.
+"""Regelmotor: gaet kategori (bus / car / truck / tram / train / misc).
 
-Principper
-- Albumnavnet vejer tungest (en fotograf navngiver typisk et album efter emnet).
-- Tydelige ord (b10m, sporvogn, lokomotiv ...) giver mange point.
-- Maerker der bruges til flere typer koeretoejer (volvo, scania, man ...) giver
-  kun 1 point, saa de aldrig alene afgoer noget.
-- For lidt eller uafgjort evidens giver 'misc' (hellere misc end forkert).
+Saadan virker det
+1. ALLE albums billedet ligger i stemmer. "Trams", "Cars in Denmark 2018", "Volvo B10M" ...
+   giver 6 point (maerkealbums som "Toyota" 3). Land- og aarsalbums ("Denmark 2010's") er
+   blandede og stemmer ikke. Dine egne rettelser staar i tools/album_categories.csv.
+2. Tagget 'bus' staar paa ca. 70 % af billederne, ogsaa paa sporvogne, tog og lastbiler, saa
+   det giver kun 3 point og kan overstyres af album og titel.
+3. Ord i titel, tags og beskrivelse (b10m, sporvogn, lokomotiv ...) giver point. Maerker der
+   bruges til flere typer (renault, hyundai, volvo, scania ...) giver 0-1 point.
+4. Er der for lidt eller uafgjort evidens, bliver det 'misc' (hellere misc end forkert).
 
-Tilpas ordlisterne nedenfor. Efter en aendring koeres:
-    python tools/import_flickr.py reclassify
+Efter en aendring: python tools/import_flickr.py reclassify   (viser kun en forhaandsvisning)
 """
 import re
 
@@ -33,21 +34,21 @@ RULES = {
         ("arriva", 3), ("movia", 3), ("keolis", 3), ("din offentlige transport", 3),
         ("midttrafik", 3), ("nordjyllands trafikselskab", 3), ("nt bus", 4), ("fynbus", 5),
         ("sydtrafik", 3), ("fjord1", 1), ("nettbuss", 5), ("vy buss", 5), ("swebus", 5),
-        ("ruter", 2), ("skyss", 2), ("busslinje", 5), ("autobus", 5), ("coach", 4),
+        ("ruter", 2), ("skyss", 2), ("busslinje", 5), ("autobus", 5), ("coach", 4), ("dab", 4), ("coaches", 4), ("ansair", 6), ("pr100", 5), ("pr 100", 5), ("pr180", 5), ("caetano", 6), ("utic", 5), ("ikarus", 6), ("karosa", 6), ("bova", 6), ("berkhof", 6), ("jonckheere", 6), ("otokar", 6), ("temsa", 6), ("carrus", 6), ("kiitokori", 6), ("trolleybus*", 6), ("trolley bus*", 6), ("doppeldecker", 5), ("double decker", 5), ("double-decker", 5), ("bodybuilder*", 4), ("busdealer*", 5), ("scrapbus*", 6),
         ("stadsbuss*", 5), ("linjebuss*", 5),
     ],
     "tram": [
         ("sporvogn*", 7), ("tram", 7), ("trams", 7), ("trikk", 7), ("sparvagn*", 7),
-        ("letbane*", 6), ("light rail", 6), ("lrt", 4), ("strassenbahn", 7), ("tramway", 7),
+        ("letbane*", 6), ("strassenbahn", 7), 
         ("tatra", 4), ("gt6", 5), ("gt8", 5), ("gt6n", 6), ("combino", 7), ("flexity", 7),
-        ("sporvej*", 6), ("sporvejsmuseum*", 7), ("aarhus letbane", 7), ("odense letbane", 7),
+        ("aarhus letbane", 7), ("odense letbane", 7),
         ("tw6000", 6), ("m-wagen", 5), ("tram line", 6),
     ],
     "train": [
         ("tog", 6), ("toge", 6), ("dsb", 6), ("s-tog", 7), ("stog", 6), ("lokomotiv*", 7),
-        ("lok", 4), ("lokotog", 5), ("jernbane*", 6), ("banegaard*", 5), ("station", 2), ("stationer", 2),
+        ("lok", 4), ("lokotog", 5), ("jernbane*", 6), ("banegaard*", 5), 
         ("perron*", 4), ("skinnebus*", 6), ("motorvogn*", 4), ("togsaet", 6), ("ic3", 7),
-        ("ic4", 7), ("re-tog", 6), ("regionaltog", 7), ("intercity", 6), ("metro", 5),
+        ("ic4", 7), ("re-tog", 6), ("regionaltog", 7), ("metro", 5),
         ("metrotog", 6), ("railway", 6), ("train", 6), ("trains", 6), ("locomotive", 7),
         ("mz", 5), ("mx", 3), ("litra", 5), ("arriva tog", 7),
         ("lokaltog", 7), ("nesa", 3), ("njk", 4), ("sj", 3), ("sj rc", 5), ("bane danmark", 5),
@@ -65,8 +66,8 @@ RULES = {
         ("lb140", 6), ("lb110", 6), ("lb111", 6), ("t10", 2), ("tgx", 6), ("tgs", 6), ("tga", 6),
         ("actros", 6), ("atego", 5), ("axor", 6), ("daf xf", 6), ("xf105", 6), ("cf85", 6),
         ("iveco stralis", 6), ("stralis", 6), ("eurotech", 5), ("magirus", 5), ("scania r", 3),
-        ("scania t", 3), ("scania g", 3), ("streamline", 4), ("scania 143", 6), ("scania 113", 6),
-        ("scania 142", 6), ("scania 112", 6), ("scania 141", 6), ("scania 111", 6),
+        ("scania t", 3), ("scania g", 3), ("streamline", 4), ("scania 143", 2), ("scania 113", 2),
+        ("scania 142", 2), ("scania 112", 2), ("scania 141", 2), ("scania 111", 2),
         ("volvo fh", 6), ("volvo fm", 6), ("volvo f12", 6), ("volvo fl", 5), ("volvo nl", 5),
         ("kaessbohrer", 2), ("hangertrailer", 5), ("semitrailer", 6), ("rigid", 2),
         ("vognmand*", 5), ("vognmandsforretning*", 6), ("spedition*", 5),
@@ -82,12 +83,12 @@ RULES = {
         ("kombi", 3), ("minivan", 5), ("campingbil*", 4), ("autocamper*", 4), ("cars", 6), ("car", 6),
         ("volvo 240", 6), ("volvo 740", 6), ("volvo 940", 6), ("volvo 850", 6), ("volvo v70", 6),
         ("volvo s80", 6), ("volvo 144", 6), ("volvo 164", 6), ("amazon", 3), ("pv544", 6),
-        ("p1800", 6), ("saab 900", 6), ("saab 99", 6), ("saab 9000", 6), ("opel", 3), ("ford", 2), ("mercedes", 1), ("bmw", 4), ("audi", 4), ("toyota", 4),
-        ("fiat", 3), ("peugeot", 4), ("renault", 4), ("citroen", 4), ("skoda", 4),
-        ("mazda", 4), ("honda", 3), ("nissan", 4), ("hyundai", 4), ("kia", 3), ("porsche", 5),
-        ("ferrari", 5), ("lamborghini", 5), ("jaguar", 4), ("mini cooper", 5), ("trabant", 6),
+        ("p1800", 6), ("saab 900", 6), ("saab 99", 6), ("saab 9000", 6), ("opel", 2), ("ford", 1), ("mercedes", 0), ("bmw", 4), ("audi", 4), ("toyota", 2),
+        ("fiat", 1), ("peugeot", 4), ("renault", 1), ("citroen", 4), ("skoda", 1),
+        ("mazda", 2), ("honda", 2), ("nissan", 2), ("hyundai", 1), ("kia", 1), ("porsche", 5),
+        ("ferrari", 5), ("lamborghini", 5), ("jaguar", 2), ("mini cooper", 5), ("trabant", 6), ("alfa romeo", 5), ("vauxhall", 3), ("lancia", 4), ("land rover", 4), ("jeep", 4), ("daihatsu", 3), ("subaru", 4), ("suzuki", 3), ("lexus", 5),
         ("wartburg", 6), ("lada", 5), ("mustang", 5), ("corvette", 6), ("cadillac", 5),
-        ("chevrolet", 3), ("dodge", 3), ("buick", 5), ("chrysler", 4), ("tesla", 5),
+        ("chevrolet", 1), ("dodge", 1), ("buick", 5), ("chrysler", 1), ("tesla", 5),
         ("bilforhandler*", 5), ("bilmoede", 6), ("bilstaevne", 6), ("bilmesse", 6),
         ("veterantraef", 4), ("bilmuseum*", 5), ("rally", 3), ("racerbil*", 5), ("formel", 3),
         ("taxa", 5), ("taxi", 5), ("politibil*", 5), ("politi", 2), ("ladvogn", 1),
@@ -96,15 +97,7 @@ RULES = {
 
 # Ord der er for tvetydige til at vaere nyttige alene - bevidst IKKE med paa
 # listen: volvo, scania, man, mercedes (kun 1 point), daf, iveco, ...
-AMBIGUOUS_BRANDS = [("volvo", 1), ("scania", 1), ("man", 0), ("daf", 1), ("iveco", 1), ("mercedes", 1)]
-
-ALBUM_WEIGHT = 2.0       # albumnavnet taeller dobbelt
-TITLE_WEIGHT = 1.5       # titel/tags taeller 1.5
-DESC_WEIGHT = 0.6        # beskrivelser er ofte lange og stoejende
-MIN_SCORE = 4.0          # under dette -> misc
-MIN_LEAD = 2.0           # foerste skal vaere mindst 2 point foran nr. 2
-STRONG = 8.0             # et enkelt felt med score >= STRONG kan overstyre albummet
-
+AMBIGUOUS_BRANDS = [("volvo", 1), ("scania", 1), ("man", 0), ("daf", 1), ("iveco", 1), ("mercedes", 0)]
 
 def _compile(patterns):
     out = []
@@ -150,38 +143,146 @@ def score_text(text):
     return scores, hits
 
 
+# ---------------------------------------------------------------------------
+# Afgoerelsen
+#
+# Din fars egne albums er det staerkeste signal ("Trams", "Cars in Denmark 2018",
+# "Volvo B10M" ...). Et billede ligger ofte i flere albums, og ALLE tages med.
+# Land- og aarsalbums ("Denmark 2010's", "Portugal") er blandede og stemmer ikke.
+# Tagget 'bus' staar paa ca. 70 % af billederne - ogsaa paa sporvogne, tog og
+# lastbiler - saa det tæller kun lidt og kan overstyres af album og titel.
+# ---------------------------------------------------------------------------
+import csv
+import os
+
+TITLE_WEIGHT = 1.5       # ord i titlen
+TAG_WEIGHT = 1.0         # oevrige ord i tags
+DESC_WEIGHT = 0.6        # beskrivelser er ofte lange og stoejende
+STRONG_ALBUM = 6.0       # album med tydeligt emne (Trams, Cars in ..., Volvo B10M)
+MEDIUM_ALBUM = 5.0       # album med overvejende ét emne, men ogsaa andet (Sporvejsmuseet: sporvogne + DAB-busser)
+WEAK_ALBUM = 3.0         # maerkealbum (Toyota, Mercedes, Scania ...) - kan indeholde flere typer
+MIN_SCORE = 3.0          # under dette -> misc (et enkelt tag som "bus" er nok, hvis intet andet modsiger)
+MIN_LEAD = 1.5           # foerste skal vaere mindst 1,5 point foran nr. 2
+
+# Generiske tags. Din far har 'bus' paa trams/tog/lastbiler, saa kun 3 point.
+GENERIC_TAGS = {"bus": ("bus", 3), "buses": ("bus", 3), "car": ("car", 3), "cars": ("car", 3),
+                "carspotting": ("car", 2), "truck": ("truck", 5), "trucks": ("truck", 5),
+                "tram": ("tram", 5), "trams": ("tram", 5), "train": ("train", 5), "trains": ("train", 5)}
+
+CSV_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "album_categories.csv")
+
+_BUS_ALBUM = re.compile(
+    r"\bbus(es|dealer|bodybuilder)?\b|scrapbus|trolleybus|\bvolvo b\d|\bvolvo [79]\d00\b|citaro|\bo ?[34]0\d\b|"
+    r"^(solaris|ikarus|ikarbus|vdl|dab|irisbus)\b|bodybuilder|preserved buses", re.I)
+_CAR_MODEL_ALBUM = re.compile(                       # model-albums: altid biler
+    r"(^|\b)(new |dutch )?volvo (v\d|s\d|xc|c\d|\d{3}|pv|40|amazon|66)", re.I)
+_CAR_BRAND_ALBUM = re.compile(                       # maerkealbums: kan ogsaa have busser/lastbiler
+    r"^(toyota|volkswagen|bmw|audi|saab|opel|datsun|citroen|peugeot|renault|chevrolet|mazda|honda|skoda|"
+    r"mitsubishi|subaru|porsche|suzuki|seat|proton|perodua|yugo|volga|moskvich|uaz|zaz|lada|isuzu|chrysler|"
+    r"ford|us cars)", re.I)
+
+
+def guess_album_category(title):
+    """(kategori eller None, styrke). None = blandet album der ikke stemmer."""
+    t = _norm(title)
+    has = lambda w: re.search(r"\b" + w + r"\b", t)
+    if has("trucks?") and has("bus\\w*"):
+        return None, 0                                   # fx 'Staaling Truck/Busdealer = Scrapyard'
+    if "tramway museum" in t:
+        return "tram", MEDIUM_ALBUM                      # mest sporvogne, men ogsaa DAB-busser (de har selv et busalbum)
+    if "museum" in t and "car museum" not in t:
+        return None, 0
+    if has("trams?"):
+        return "tram", STRONG_ALBUM
+    if has("trains?"):
+        return "train", STRONG_ALBUM
+    if has("trucks?"):
+        return "truck", STRONG_ALBUM
+    if _BUS_ALBUM.search(t):
+        return "bus", STRONG_ALBUM
+    if re.search(r"\bcars?\b", t):
+        return "car", STRONG_ALBUM
+    if _CAR_MODEL_ALBUM.search(t):
+        return "car", STRONG_ALBUM
+    if _CAR_BRAND_ALBUM.search(t):
+        return "car", WEAK_ALBUM                         # maerkealbum: svagere stemme
+    return None, 0
+
+
+_overrides = None
+
+
+def album_overrides():
+    """tools/album_categories.csv:  album;category;strength   (category: bus car truck tram train mixed)."""
+    global _overrides
+    if _overrides is None:
+        _overrides = {}
+        if os.path.exists(CSV_PATH):
+            with open(CSV_PATH, encoding="utf-8", newline="") as fh:
+                for row in csv.reader(fh, delimiter=";"):
+                    if len(row) >= 2 and row[0] and not row[0].startswith("#") and row[0] != "album":
+                        cat = row[1].strip().lower()
+                        word = row[2].strip().lower() if len(row) > 2 else "strong"
+                        strength = {"weak": WEAK_ALBUM, "medium": MEDIUM_ALBUM}.get(word, STRONG_ALBUM)
+                        _overrides[row[0].strip().lower()] = (None if cat in ("mixed", "") else cat, strength)
+    return _overrides
+
+
+def album_category(title):
+    ov = album_overrides().get((title or "").strip().lower())
+    return ov if ov else guess_album_category(title)
+
+
 def _best(scores):
     ranked = sorted(scores.items(), key=lambda kv: kv[1], reverse=True)
     (c1, s1), (c2, s2) = ranked[0], ranked[1]
     return c1, s1, s1 - s2
 
 
-def classify(album_title, title, tags, description):
-    """Returnerer (kategori, begrundelse). Begrundelsen gemmes i databasen,
-    saa du kan se hvorfor et billede endte hvor det gjorde."""
-    a_sc, a_hits = score_text(album_title)
+def classify(albums, title, tags, description):
+    """albums: liste med ALLE albumnavne billedet ligger i (en enkelt tekst virker ogsaa).
+    Returnerer (kategori, begrundelse); begrundelsen gemmes, saa du kan se hvorfor."""
+    if isinstance(albums, str):
+        albums = [albums] if albums else []
+    total = {c: 0.0 for c in RULES}
+    why = []
+
+    # 1) albums: hver kategori faar sin staerkeste stemme (flere ens albums tæller ikke dobbelt)
+    votes = {}
+    for a in albums:
+        cat, strength = album_category(a)
+        if cat in total and strength > votes.get(cat, (0, ""))[0]:
+            votes[cat] = (strength, a)
+    for cat, (strength, a) in votes.items():
+        total[cat] += strength
+        why.append(f"album {a[:25]!r}={cat}")
+
+    # 2) generiske tags (bus, car, tram ...) faar faste, lave point
+    tag_words = [w for w in re.split(r"[,\s]+", (tags or "").lower()) if w]
+    seen = set()
+    for w in tag_words:
+        if w in GENERIC_TAGS and w not in seen:
+            seen.add(w)
+            cat, pts = GENERIC_TAGS[w]
+            total[cat] += pts
+    # Din far kopierer ofte titlen ind som tag - et ord skal ikke taelle to gange.
+    title_norm = _norm(title)
+    pieces = [p.strip().strip(",").strip() for p in re.split(r"(?<=,)\s*", tags or "")]
+    rest = " ".join(p for p in pieces
+                    if p and p.lower() not in GENERIC_TAGS and _norm(p).strip() not in title_norm)
+
+    # 3) titel, oevrige tags og beskrivelse
     t_sc, t_hits = score_text(title)
-    g_sc, g_hits = score_text(tags)
+    g_sc, g_hits = score_text(rest)
     d_sc, d_hits = score_text(description)
-
-    total = {c: a_sc[c] * ALBUM_WEIGHT + (t_sc[c] + g_sc[c]) * TITLE_WEIGHT + d_sc[c] * DESC_WEIGHT
-             for c in RULES}
-
-    a_cat, a_best, a_lead = _best(a_sc)
-    album_decides = a_best >= 3 and a_lead >= 2
-
-    # Albummet er udgangspunktet, medmindre selve billedets titel/tags
-    # tydeligt peger paa noget andet.
-    if album_decides:
-        own = {c: t_sc[c] + g_sc[c] for c in RULES}
-        o_cat, o_best, o_lead = _best(own)
-        if o_cat != a_cat and o_best >= STRONG and o_lead >= MIN_LEAD:
-            hit = (t_hits[o_cat] + g_hits[o_cat])[:3]
-            return o_cat, f"billede overstyrer album ({a_cat}): {', '.join(hit)}"
-        return a_cat, f"album: {', '.join(a_hits[a_cat][:3])}"
+    for c in total:
+        total[c] += t_sc[c] * TITLE_WEIGHT + g_sc[c] * TAG_WEIGHT + d_sc[c] * DESC_WEIGHT
+    words = []
+    for c, _, _ in [(c, 0, 0) for c in total]:
+        words += [f"{w}→{c}" for w in (t_hits[c] + g_hits[c])[:2]]
 
     cat, best, lead = _best(total)
+    detail = "; ".join(why + words[:4] + ([f"tags: {','.join(sorted(seen))}"] if seen else []))
     if best < MIN_SCORE or lead < MIN_LEAD:
-        return "misc", f"uklart (bedste {cat} {best:.1f}, forspring {lead:.1f})"
-    hit = (t_hits[cat] + g_hits[cat] + d_hits[cat] + a_hits[cat])[:3]
-    return cat, f"ord: {', '.join(hit)}"
+        return "misc", f"uklart ({cat} {best:.1f}, forspring {lead:.1f}) {detail}"[:240]
+    return cat, f"{detail}"[:240]

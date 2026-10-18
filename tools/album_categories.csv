@@ -1,0 +1,262 @@
+# Hvilken kategori hører et ALBUM til? Ret en linje, og kør derefter:  python tools/import_flickr.py reclassify
+# category: bus, car, truck, tram, train eller mixed (mixed = blandet album, fx land/år, stemmer ikke)
+# strength: strong = albummet afgør næsten alt, medium = overvejende, weak = kun en svag stemme (mærkealbums som Toyota)
+album;category;strength
+Bus bodybuilder's plates/chassisnumber etc.;bus;strong
+Buses in Greenland (Nuuk);bus;strong
+Buses in Movialand;bus;strong
+Buses in Slovakia;bus;strong
+Buses in Åland;bus;strong
+Buses of Chinese origin;bus;strong
+DAB;bus;strong
+Ikarbus;bus;strong
+Ikarus;bus;strong
+Irisbus/Iveco bus;bus;strong
+MAN buses;bus;strong
+Mercedes Citaro;bus;strong
+Mercedes eCitaro;bus;strong
+Mercedes O305/O307;bus;strong
+Mercedes O405/N + 407/408;bus;strong
+Misc. Bus brands;bus;strong
+Misc. Mercedes buses;bus;strong
+Misc. Volvo buses;bus;strong
+Preserved buses;bus;strong
+Russian bus brands;bus;strong
+Scrapyard/scrapbuses;bus;strong
+Solaris;bus;strong
+Trolleybuses;bus;strong
+VBI busdealer;bus;strong
+VDL;bus;strong
+Volvo 7000/7700/7900;bus;strong
+Volvo 9500/9700/9900;bus;strong
+Volvo B0E;bus;strong
+Volvo B10B/LE;bus;strong
+Volvo B10L;bus;strong
+Volvo B10M;bus;strong
+Volvo B10R;bus;strong
+Volvo B11R/B13R;bus;strong
+Volvo B12B/LE;bus;strong
+Volvo B12M;bus;strong
+Volvo B58;bus;strong
+Volvo B59;bus;strong
+Volvo B5L/B5LH;bus;strong
+Volvo B5TL;bus;strong
+Volvo B7L/B7TL;bus;strong
+Volvo B7R/LE;bus;strong
+Volvo B8R/LE;bus;strong
+Volvo B9L/B9TL;bus;strong
+Volvo B9R/LE;bus;strong
+Cars in Albania;car;strong
+Cars in Andorra;car;strong
+Cars in Armenia 2017;car;strong
+Cars in Australia 2012/13;car;strong
+Cars in Austria;car;strong
+Cars in Azerbaijan 2017;car;strong
+Cars in Belarus 2016;car;strong
+Cars in Belgium;car;strong
+Cars in Bosnia/Herzegovina;car;strong
+Cars in Brunei;car;strong
+Cars in Bulgaria;car;strong
+Cars in Cambodia 2019;car;strong
+Cars in Cypres 2017;car;strong
+Cars in Denmark 2013;car;strong
+Cars in Denmark 2014;car;strong
+Cars in Denmark 2015;car;strong
+Cars in Denmark 2016;car;strong
+Cars in Denmark 2017;car;strong
+Cars in Denmark 2018;car;strong
+Cars in Denmark 2019;car;strong
+Cars in Denmark 2020;car;strong
+Cars in Denmark 2021;car;strong
+Cars in Denmark 2022;car;strong
+Cars in Denmark 2023;car;strong
+Cars in Denmark 2024;car;strong
+Cars in Denmark 2025;car;strong
+Cars in Denmark 2026;car;strong
+Cars in England/Wales;car;strong
+Cars in Estonia;car;strong
+Cars in Finland;car;strong
+Cars in France;car;strong
+Cars in Georgia 2017;car;strong
+Cars in Germany;car;strong
+Cars in Greece;car;strong
+Cars in Greenland/Nuuk 2026;car;strong
+Cars in Hungary;car;strong
+Cars in Indonesia 2019;car;strong
+Cars in Israel 2017;car;strong
+Cars in Italy;car;strong
+Cars in Kazakhstan;car;strong
+Cars in Kosovo 2018;car;strong
+Cars in Kyrgyzstan;car;strong
+Cars in Latvia;car;strong
+Cars in Liechtenstein;car;strong
+Cars in Lithuania;car;strong
+Cars in Malaysia ;car;strong
+Cars in Malta 2021;car;strong
+Cars in Moldova 2018;car;strong
+Cars in Montenegro 2016;car;strong
+Cars in New Zealand;car;strong
+Cars in North Macedonia;car;strong
+Cars in Norway;car;strong
+Cars in Poland;car;strong
+Cars in Portugal;car;strong
+Cars in Qatar 2019;car;strong
+Cars in Russia;car;strong
+Cars in San Marino;car;strong
+Cars in Scotland 2017;car;strong
+Cars in Serbia;car;strong
+Cars in Singapore;car;strong
+Cars in Spain;car;strong
+Cars in Sweden;car;strong
+Cars in Switzerland;car;strong
+Cars in Thailand 2019;car;strong
+Cars in The Netherlands;car;strong
+Cars in the US;car;strong
+Cars in Transnistria 2018;car;strong
+Cars in Turkey 2017;car;strong
+Cars in Ukraine;car;strong
+Cars in Uzbekistan;car;strong
+Cars in Vietnam 2019;car;strong
+Cars in Åland;car;strong
+Dutch Volvo 66, 340/360, 440/460/480;car;strong
+Jännaholm Car Museum, Sweden;car;strong
+Misc. cars;car;strong
+Misc. Soviet cars;car;strong
+New Volvo V90/S90;car;strong
+US car and spare parts dealer in Denmark 2020;car;strong
+US cars;car;strong
+US cars (old);car;strong
+Volvo 121/122/123 Amazon;car;strong
+Volvo 142/144/145/164;car;strong
+Volvo 240/260;car;strong
+Volvo 40 series;car;strong
+Volvo 740/760/780;car;strong
+Volvo 850/S70;car;strong
+Volvo 940;car;strong
+Volvo 960/V90/S90;car;strong
+Volvo C30;car;strong
+Volvo C70;car;strong
+Volvo PV444/544+445/210 & 1800;car;strong
+Volvo S80;car;strong
+Volvo V50 & S60/V60;car;strong
+Volvo V70/XC70;car;strong
+Volvo XC60 & XC90;car;strong
+Audi;car;weak
+BMW;car;weak
+Chevrolet;car;weak
+Chrysler (AUS);car;weak
+Citroen/DS;car;weak
+Datsun/Nissan + Infiniti;car;weak
+Ford (AUS);car;weak
+Ford (European);car;weak
+Ford US;car;weak
+Honda;car;weak
+Isuzu & Daihatsu;car;weak
+Lada;car;weak
+Mazda;car;weak
+Mitsubishi;car;weak
+Moskvich;car;weak
+Opel/Vauxhall/Holden;car;weak
+Perodua;car;weak
+Peugeot;car;weak
+Porsche;car;weak
+Proton;car;weak
+Renault;car;weak
+SAAB;car;weak
+Seat;car;weak
+Skoda;car;weak
+Subaru;car;weak
+Suzuki;car;weak
+Toyota/Lexus/Scion;car;weak
+UAZ;car;weak
+Volga;car;weak
+Volkswagen;car;weak
+Yugo/Zastava;car;weak
+ZAZ & IZH;car;weak
+Albania;mixed;
+Armenia;mixed;
+Australia;mixed;
+Austria;mixed;
+Azerbaijan;mixed;
+Belarus;mixed;
+Belgium;mixed;
+Bosnia and Herzegovina;mixed;
+British ;mixed;
+Bulgaria;mixed;
+Chinese;mixed;
+Copenhagen (HT area) 1984-1989;mixed;
+CPH Airport - then and now;mixed;
+Cypres/Northern Cypres;mixed;
+DAF;mixed;
+Dashboard and interior;mixed;
+DDR vehicles;mixed;
+Denmark 1980's;mixed;
+Denmark 1990's;mixed;
+Denmark 2000's;mixed;
+Denmark 2010's;mixed;
+Denmark 2020;mixed;
+Denmark 2021;mixed;
+Denmark 2022;mixed;
+Denmark 2023;mixed;
+Denmark 2024;mixed;
+Denmark 2025;mixed;
+Denmark 2026;mixed;
+England, Ireland & Wales;mixed;
+Estonia;mixed;
+European ministates;mixed;
+Faroe Islands;mixed;
+Finland;mixed;
+France;mixed;
+Georgia;mixed;
+Germany;mixed;
+Greece;mixed;
+Hungary;mixed;
+Iceland 1989;mixed;
+Israel;mixed;
+Italian;mixed;
+Italy;mixed;
+Kazakhstan;mixed;
+Korean;mixed;
+Kosovo;mixed;
+Kyrgyzstan;mixed;
+Latvia;mixed;
+Lebanon 2017;mixed;
+Lithuania;mixed;
+Luxembourg;mixed;
+Malta;mixed;
+MAZ;mixed;
+Mercedes;mixed;
+Miscellaneous;mixed;
+Moldova & Pridnestrovian Moldavian Republic (Transnistra);mixed;
+Montenegro;mixed;
+Morocco 1998;mixed;
+New Zealand;mixed;
+North Macedonia;mixed;
+Norway;mixed;
+Nørreport Bottleneck;mixed;
+Poland;mixed;
+Portugal;mixed;
+Qatar;mixed;
+Road Safety Training Centres in Denmark;mixed;
+Romania;mixed;
+Russia;mixed;
+Scania;mixed;
+Scotland;mixed;
+Serbia;mixed;
+Singapore;mixed;
+South East Asia ( - Singapore);mixed;
+Spain;mixed;
+Staaling Truck/Busdealer = Scrapyard;mixed;
+Sweden;mixed;
+Switzerland;mixed;
+The Netherlands;mixed;
+Tunesia;mixed;
+Turkey;mixed;
+Ukraine;mixed;
+USA;mixed;
+Uzbekistan;mixed;
+Volvo Misc.;mixed;
+Trains;train;strong
+Danish Tramway Museum;tram;medium
+Trams;tram;strong
+Trucks;truck;strong

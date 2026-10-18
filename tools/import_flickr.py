@@ -14,7 +14,7 @@ Fra Flickrs eksport (zip-filer; ingen CDN-graense) - anbefalet naar Flickr bloke
     python tools/import_flickr.py push-db           # laegger databasen i R2 (se bunden af filen)
 
 Andre kommandoer:
-    reclassify        koer regelmotoren (tools/flickr_rules.py) igen
+    reclassify        koer kategori-reglerne igen - viser kun en forhaandsvisning; gem med --apply
     purge-excluded    slet evt. allerede importerede billeder fra udelukkede albums
     link-albums       laeg ALLE albums paa billederne (kraever --source)
     reset-import      slet ALT importeret fra Flickr (R2-filer, billeder, albums, koe) og start forfra
@@ -786,7 +786,7 @@ def cmd_export_metadata(args):
             up = calendar.timegm(time.strptime(d["date_imported"], "%Y-%m-%d %H:%M:%S"))
         except Exception:
             up = 0
-        cat, why = flickr_rules.classify(album_title, title, tags, desc)
+        cat, why = flickr_rules.classify([al["title"] for al in d.get("albums", [])], title, tags, desc)
         conn.execute(
             """INSERT INTO flickr_photos(flickr_id, title, description, tags, date_taken, date_upload,
                    album_flickr_id, album_title, source_url, source_label, category, category_reason)
@@ -1040,24 +1040,65 @@ def cmd_images(args):
 # Vedligehold
 # ---------------------------------------------------------------------------
 def cmd_reclassify(args):
+    """Koerer kategori-reglerne igen. SOM STANDARD AENDRES INTET - du faar en forhaandsvisning
+    (data/reclassify_preview.csv). Foerst naar du koerer med --apply gemmes det, og der tages
+    en sikkerhedskopi af databasen foerst. Billeder du selv har rettet i hånden rores ikke."""
     conn = db_connect()
-    changed = 0
+    albums_of = {}
+    for r in conn.execute("""SELECT ia.image_id, a.name FROM image_albums ia JOIN albums a ON a.id = ia.album_id
+                             ORDER BY a.name"""):
+        albums_of.setdefault(r["image_id"], []).append(r["name"])
     rows = conn.execute("""SELECT p.flickr_id, p.album_title, p.title, p.tags, p.description, p.category,
                                   p.status, p.image_id, i.category AS img_cat
                            FROM flickr_photos p LEFT JOIN images i ON i.id = p.image_id""").fetchall()
+    changes, kept_manual, same = [], 0, 0
+    for r in rows:
+        albums = albums_of.get(r["image_id"]) or ([r["album_title"]] if r["album_title"] else [])
+        cat, why = flickr_rules.classify(albums, r["title"], r["tags"], r["description"])
+        if cat == r["category"]:
+            same += 1
+            continue
+        if r["status"] == "done" and r["img_cat"] != r["category"]:
+            kept_manual += 1                          # du har rettet den i hånden - roer den ikke
+            continue
+        changes.append((r, albums, cat, why))
+
+    matrix = Counter((r["category"], cat) for r, _, cat, _ in changes)
+    print(f"\n{len(rows)} billeder: {same} uaendrede, {len(changes)} skifter kategori, "
+          f"{kept_manual} har du selv rettet (rores ikke)")
+    if matrix:
+        print("\n  fra     -> til       antal")
+        for (old, new_), n in matrix.most_common():
+            print(f"  {old:7} -> {new_:7} {n:6}")
+    csv_path = os.path.join(Ctx.data_dir, "reclassify_preview.csv")
+    import csv as _csv
+    with open(csv_path, "w", encoding="utf-8", newline="") as fh:
+        w = _csv.writer(fh, delimiter=";")
+        w.writerow(["image_id", "flickr_id", "titel", "albums", "fra", "til", "begrundelse"])
+        for r, albums, cat, why in sorted(changes, key=lambda c: (c[0]["category"], c[2], c[0]["title"])):
+            w.writerow([r["image_id"] or "", r["flickr_id"], r["title"], " | ".join(albums), r["category"], cat, why])
+    print(f"\nAlle aendringer er skrevet til {csv_path} - aabn den i Excel/Numbers og kig dem igennem.")
+
+    if not args.apply:
+        print("INTET ER AENDRET. Er du tilfreds, koer igen med  --apply")
+        return
+    if not changes:
+        print("Intet at gemme.")
+        return
+    backup = os.path.join(Ctx.data_dir, "gallery.db.before-reclassify-" + time.strftime("%Y%m%d-%H%M%S"))
+    src, dst = sqlite3.connect(Ctx.db_path), sqlite3.connect(backup)
+    with dst:
+        src.backup(dst)
+    src.close()
+    dst.close()
+    print(f"Sikkerhedskopi: {backup}")
     with conn:
-        for r in rows:
-            cat, why = flickr_rules.classify(r["album_title"], r["title"], r["tags"], r["description"])
-            if cat == r["category"]:
-                continue
+        for r, _, cat, why in changes:
             if r["status"] == "done":
-                if r["img_cat"] != r["category"]:     # du har rettet den i hånden - roer den ikke
-                    continue
                 conn.execute("UPDATE images SET category=? WHERE id=?", (cat, r["image_id"]))
             conn.execute("UPDATE flickr_photos SET category=?, category_reason=? WHERE flickr_id=?",
                          (cat, why, r["flickr_id"]))
-            changed += 1
-    print(f"{changed} billeder skiftede kategori.")
+    print(f"Gemt: {len(changes)} billeder fik ny kategori. Fortryd ved at kopiere sikkerhedskopien tilbage over data/gallery.db.")
     cmd_report(args, conn=conn)
 
 
@@ -1253,8 +1294,10 @@ def main():
                    help="opdater ogsaa titel/tags/beskrivelse paa billeder der allerede er importeret")
     e.set_defaults(fn=cmd_export_metadata)
 
+    rc = sub.add_parser("reclassify", help="koer kategori-reglerne igen (forhaandsvisning; gem med --apply)")
+    rc.add_argument("--apply", action="store_true", help="gem aendringerne (tager sikkerhedskopi foerst)")
+    rc.set_defaults(fn=cmd_reclassify)
     for name, fn, h in (("report", cmd_report, "vis status og kategorier"),
-                        ("reclassify", cmd_reclassify, "koer kategori-reglerne igen"),
                         ("verify", cmd_verify, "tjek at alt ligger i R2"),
                         ("push-db", cmd_push_db, "laeg databasen i R2 til flytning til Fly")):
         sub.add_parser(name, help=h).set_defaults(fn=fn)

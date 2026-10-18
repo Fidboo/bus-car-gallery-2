@@ -38,7 +38,7 @@
 
 <div class="grid latest-grid">
     {% for image in latest %}
-    <a class="card" href="{{ url_for('image_detail', image_id=image['id'], cat=image['category']) }}">
+    <a class="card" data-full="{{ media_url('uploads', image['filename']) }}" href="{{ url_for('image_detail', image_id=image['id'], cat=image['category']) }}">
         <img src="{{ thumb_url(image['thumbnail'], image['filename']) }}" alt="{{ image['title'] }}" loading="lazy">
         <div class="card-body">
             <div class="card-title">{{ image['title'] }}</div>

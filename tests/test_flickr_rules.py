@@ -26,9 +26,10 @@ CASES = [
     (["Trains", "Singapore"], "Singapore Light Rail Transit", "singapore,light,rail,transit,bus", "train"),
     (["Trucks"], "AEC", "aec,truck,bus,new zealand,trucks", "truck"),
     (["Cars in New Zealand"], "Morris Minor", "morris,minor,bus,new zealand,car,cars", "car"),
-    # the tramway museum has trams AND buses: a lone 'bus' tag does not make a tram a bus
-    (["Danish Tramway Museum"], "1901' Scandia", "bus,museum", "tram"),
-    (["Danish Tramway Museum"], "1925' Van der Zypen", "bus,museum", "tram"),
+    # the tramway museum album never votes; the buses there have their own albums
+    (["DAB", "Danish Tramway Museum"], "1983' Leyland 7-1-TL11/8 DAB series 7", "dab,tramway,museum", "bus"),
+    # a tie between your own album and ambiguous words ('bahn', 'railway') is decided by the album
+    (["Germany", "Trams"], "H-Bahn 21 Dortmund", "bus,railway", "tram"),
     # ... unless the photo itself clearly says otherwise
     (["Trucks", "Australia"], "Volvo B12BLE Custom Coaches CB60", "bus,australia", "bus"),
     # Volvo model albums are always cars
@@ -58,6 +59,10 @@ def test_real_examples(albums, title, tags, expected):
         assert category == expected, reason
 
 
+def test_ignored_album_never_votes():
+    assert R.classify(["Danish Tramway Museum"], "x", "", "")[0] == "misc"
+
+
 def test_nothing_to_go_on_is_misc():
     assert R.classify([], "Solnedgang", "", "")[0] == "misc"
 
@@ -71,7 +76,7 @@ def test_album_guesses():
     assert R.guess_album_category("Volvo B10M") == ("bus", R.STRONG_ALBUM)
     assert R.guess_album_category("Toyota/Lexus/Scion") == ("car", R.WEAK_ALBUM)
     assert R.guess_album_category("Denmark 2010's")[0] is None            # country/year: mixed
-    assert R.guess_album_category("Danish Tramway Museum") == ("tram", R.MEDIUM_ALBUM)   # mostly trams, some DAB buses
+    assert R.guess_album_category("Danish Tramway Museum")[0] is None     # trams AND buses
     assert R.guess_album_category("Staaling Truck/Busdealer = Scrapyard")[0] is None
 
 
@@ -86,6 +91,8 @@ def test_album_csv_is_valid_and_matches_the_guesses():
             assert category in ("bus", "car", "truck", "tram", "train", "mixed"), row
             assert album not in seen, f"duplicate album {album!r}"
             seen.add(album)
+            if album.lower() in R.IGNORED_ALBUMS:
+                continue                                  # never votes, whatever the csv says
             expected = R.guess_album_category(album)[0] or "mixed"
             assert category == expected, f"{album!r}: csv={category} guess={expected}"
     assert len(seen) > 200

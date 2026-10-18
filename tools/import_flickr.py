@@ -17,6 +17,8 @@ Andre kommandoer:
     reclassify        koer kategori-reglerne igen - viser kun en forhaandsvisning; gem med --apply
     purge-excluded    slet evt. allerede importerede billeder fra udelukkede albums
     link-albums       laeg ALLE albums paa billederne (kraever --source)
+    check-urls        test om billedernes adresser svarer (404 = filen mangler, 429 = begraenset)
+    repair-files      genskab filer der mangler i R2 (kraever --source; databasen aendres ikke)
     reset-import      slet ALT importeret fra Flickr (R2-filer, billeder, albums, koe) og start forfra
 
 Indstillinger (i .env eller som miljoevariabler):
@@ -1242,6 +1244,97 @@ def cmd_verify(args):
     print("OK.")
 
 
+def cmd_check_urls(args):
+    """Tester om billedernes ADRESSER svarer, som en browser ville se dem (HTTP-status).
+    Skelner mellem: filen mangler (404), for mange forespoergsler/blokeret (429/403) og alt ok (200)."""
+    conn = db_connect()
+    r2 = make_r2()
+    rows = conn.execute("""SELECT id, title, filename, thumbnail FROM images WHERE filename GLOB 'fl[0-9]*'
+                           ORDER BY RANDOM() LIMIT ?""", (args.count,)).fetchall()
+    if not rows:
+        sys.exit("Ingen importerede billeder i databasen.")
+    sample_url = r2.public_url("thumbnails", rows[0]["thumbnail"])
+    print(f"Tester {len(rows)} tilfaeldige billeder (hovedbillede + thumbnail) mod  {sample_url.rsplit('/', 2)[0]}/ ...")
+    if ".r2.dev" in sample_url:
+        print("  ! Adressen er en r2.dev-adresse. Cloudflare begraenser dem og anbefaler dem kun til test.")
+    session = requests.Session()
+    session.headers["User-Agent"] = "bus-car-gallery-check/1.0"
+    results = Counter()
+    bad = []
+    for r in rows:
+        for kind, area, name in (("thumbnail", "thumbnails", r["thumbnail"]), ("billede", "uploads", r["filename"])):
+            url = r2.public_url(area, name)
+            try:
+                resp = session.head(url, timeout=15, allow_redirects=True)
+                if resp.status_code == 405:
+                    resp = session.get(url, timeout=15, stream=True)
+                code = str(resp.status_code)
+            except requests.RequestException as e:
+                code = type(e).__name__
+            results[code] += 1
+            if code != "200" and len(bad) < 10:
+                bad.append((code, kind, r["id"], r["title"], url))
+            time.sleep(args.delay)
+    total = sum(results.values())
+    print("\nSvar:  " + ",  ".join(f"{k}: {v} ({v * 100 // total} %)" for k, v in results.most_common()))
+    for code, kind, iid, title, url in bad:
+        print(f"  {code}  {kind:9} id {iid} {title[:30]!r}\n        {url}")
+    if results.get("404"):
+        print("\n404 = filen findes IKKE i R2. Koer:  python tools/import_flickr.py repair-files --source <mappen med zip-filerne>")
+    if results.get("429") or results.get("403") or results.get("1015"):
+        print("\n429/403 = Cloudflare begraenser eller blokerer. Det er ikke filerne der mangler, men leveringen: "
+              "brug en rigtig domaene til R2 (fx billeder.dit-domaene.dk) i stedet for r2.dev.")
+    if results.get("200") == total:
+        print("\nAlt svarer 200. Hvis billeder alligevel mangler i browseren, er det cache (proev et privat vindue / hard refresh).")
+
+
+def cmd_repair_files(args):
+    """Genskaber billedfiler der staar i databasen men mangler i R2. Laeser originalerne fra zip-filerne og
+    uploader til de SAMME filnavne. Databasen aendres IKKE (ingen nye raekker, ingen dubletter)."""
+    conn = db_connect()
+    r2 = make_r2()
+    print("Lister R2 ...")
+    existing = r2.list_keys("uploads/") | r2.list_keys("thumbnails/")
+    rows = conn.execute("""SELECT p.*, i.filename AS db_filename, i.thumbnail AS db_thumbnail
+                           FROM flickr_photos p JOIN images i ON i.id = p.image_id
+                           WHERE p.status = 'done'""").fetchall()
+    missing = [r for r in rows if f"uploads/{r['db_filename']}" not in existing
+               or f"thumbnails/{r['db_thumbnail']}" not in existing]
+    print(f"{len(rows)} importerede billeder, {len(missing)} mangler en eller begge filer i R2")
+    if not missing:
+        print("Intet at reparere.")
+        return
+    _, _, index = scan_source(args.source)
+    todo = [r for r in missing if r["flickr_id"] in index]
+    print(f"{len(todo)} af dem findes i zip-filerne og kan genskabes"
+          + (f" ({len(missing) - len(todo)} findes ikke i zip-filerne)" if len(todo) < len(missing) else ""))
+    if args.limit:
+        todo = todo[:args.limit]
+    if not todo:
+        return
+    if not args.yes and input("Upload de manglende filer til R2? [j/N] ").strip().lower() not in ("j", "ja", "y", "yes"):
+        return
+    tmp_dir = os.path.join(Ctx.data_dir, "tmp", "flickr")
+    os.makedirs(tmp_dir, exist_ok=True)
+    args.workers = args.workers or 4
+    fixed = failed = 0
+    t0 = time.time()
+    with ThreadPoolExecutor(max_workers=args.workers) as ex:
+        futures = [(r, ex.submit(process_local, r, r2, tmp_dir, index[r["flickr_id"]])) for r in todo]
+        for r, fut in futures:
+            res = fut.result()
+            if res.get("ok") and (res["filename"], res["thumbnail"]) == (r["db_filename"], r["db_thumbnail"]):
+                fixed += 1
+            else:
+                failed += 1
+                print(f"  ! {r['flickr_id']} {r['title'][:30]!r}: "
+                      f"{res.get('error') or 'filnavnet afviger fra databasen: ' + str(res.get('filename'))}")
+            n = fixed + failed
+            if n % 100 == 0 or n == len(todo):
+                print(f"[{n}/{len(todo)}] genskabt={fixed} fejl={failed}  {n / max(time.time() - t0, 1) * 60:.0f}/min", flush=True)
+    print(f"\nFaerdig: {fixed} billeder genskabt i R2, {failed} fejlede. Koer  verify  for at tjekke.")
+
+
 def cmd_push_db(args):
     """Laegger en konsistent kopi af databasen i R2 som backups/gallery-import.db.
     Paa serveren: python tools/restore_db.py backups/gallery-import.db --force  (derefter genstart)."""
@@ -1307,6 +1400,16 @@ def main():
     la = sub.add_parser("link-albums", help="laeg ALLE albums paa de importerede billeder (fra albums.json)")
     la.add_argument("--source", required=True, help="mappen med eksport-zipfilerne (der skal bruges albums.json)")
     la.set_defaults(fn=cmd_link_albums)
+    cu = sub.add_parser("check-urls", help="test om billedernes adresser svarer (404 = mangler, 429 = begraenset)")
+    cu.add_argument("--count", type=int, default=100, help="antal tilfaeldige billeder (standard 100)")
+    cu.add_argument("--delay", type=float, default=0.05, help="pause mellem kald i sekunder")
+    cu.set_defaults(fn=cmd_check_urls)
+    rf = sub.add_parser("repair-files", help="genskab billedfiler der mangler i R2 (databasen aendres ikke)")
+    rf.add_argument("--source", required=True, help="mappen med eksport-zipfilerne")
+    rf.add_argument("--workers", type=int, default=None)
+    rf.add_argument("--limit", type=int)
+    rf.add_argument("--yes", action="store_true")
+    rf.set_defaults(fn=cmd_repair_files)
     p = sub.add_parser("purge-excluded", help="slet importerede billeder fra udelukkede albums")
     p.add_argument("--yes", action="store_true")
     p.set_defaults(fn=cmd_purge_excluded)

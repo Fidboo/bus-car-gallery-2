@@ -2,13 +2,17 @@
 
 Saadan virker det
 1. ALLE albums billedet ligger i stemmer. "Trams", "Cars in Denmark 2018", "Volvo B10M" ...
-   giver 6 point (maerkealbums som "Toyota" 3). Land- og aarsalbums ("Denmark 2010's") er
-   blandede og stemmer ikke. Dine egne rettelser staar i tools/album_categories.csv.
+   giver 6 point (maerkealbums som "Toyota" 3), ganget med ALBUM_WEIGHT. Land- og aarsalbums
+   ("Denmark 2010's") er blandede og stemmer ikke. "Danish Tramway Museum" ignoreres helt.
+   Dine egne rettelser staar i tools/album_categories.csv.
 2. Tagget 'bus' staar paa ca. 70 % af billederne, ogsaa paa sporvogne, tog og lastbiler, saa
-   det giver kun 3 point og kan overstyres af album og titel.
+   det giver kun 3 point, kan overstyres af album og titel, og ignoreres helt hvis billedet
+   har et mere specifikt tag (tram, train, truck, car).
 3. Ord i titel, tags og beskrivelse (b10m, sporvogn, lokomotiv ...) giver point. Maerker der
    bruges til flere typer (renault, hyundai, volvo, scania ...) giver 0-1 point.
 4. Er der for lidt eller uafgjort evidens, bliver det 'misc' (hellere misc end forkert).
+   Undtagelse: ved knap uafgjort vinder den kategori der som den eneste har et specifikt tag,
+   ellers den som er din fars eget tydelige album (fx 'Trams').
 
 Efter en aendring: python tools/import_flickr.py reclassify   (viser kun en forhaandsvisning)
 """
@@ -23,7 +27,7 @@ RULES = {
         ("lavgulvsbus*", 5), ("dobbeltdaekker*", 4), ("togbus*", 5), ("flybus*", 4),
         ("skolebus*", 5), ("rutebus*", 5), ("telebus*", 5), ("flextrafik", 2),
         ("b10m", 6), ("b10b", 6), ("b10r", 6), ("b12", 4), ("b7r", 6), ("b9", 3), ("b6", 3),
-        ("b10", 3), ("b58", 5), ("b59", 5), ("b10ble", 6),
+        ("b10", 3), ("b58", 5), ("b59", 5), ("b10ble", 6), ("b12ble", 6), ("b12b", 6), ("b12m", 6), ("b7rle", 6), ("b8rle", 6), ("b9tl", 6), ("b9r", 6), ("b9rle", 6), ("b5l", 6), ("b5lh", 6), ("b5tl", 6), ("b7l", 6), ("b7tl", 6), ("b11r", 6), ("b13r", 6), ("b10l", 6), ("b10ble", 6),
         ("o305", 6), ("o405", 6), ("o530", 6), ("citaro*", 6), ("tourismo", 5), ("travego", 5),
         ("irisbus", 6), ("irizar", 6), ("van hool", 6), ("vanhool", 6), ("setra", 6),
         ("neoplan", 6), ("solaris", 6), ("urbino", 6), ("lion's city", 6), ("lions city", 6),
@@ -39,17 +43,17 @@ RULES = {
     ],
     "tram": [
         ("sporvogn*", 7), ("tram", 7), ("trams", 7), ("trikk", 7), ("sparvagn*", 7),
-        ("letbane*", 6), ("strassenbahn", 7), 
+        ("letbane*", 6), ("strassenbahn", 7),
         ("tatra", 4), ("gt6", 5), ("gt8", 5), ("gt6n", 6), ("combino", 7), ("flexity", 7),
         ("aarhus letbane", 7), ("odense letbane", 7),
         ("tw6000", 6), ("m-wagen", 5), ("tram line", 6),
     ],
     "train": [
         ("tog", 6), ("toge", 6), ("dsb", 6), ("s-tog", 7), ("stog", 6), ("lokomotiv*", 7),
-        ("lok", 4), ("lokotog", 5), ("jernbane*", 6), ("banegaard*", 5), 
+        ("lok", 4), ("lokotog", 5), ("jernbane*", 6), ("banegaard*", 5),
         ("perron*", 4), ("skinnebus*", 6), ("motorvogn*", 4), ("togsaet", 6), ("ic3", 7),
         ("ic4", 7), ("re-tog", 6), ("regionaltog", 7), ("metro", 5),
-        ("metrotog", 6), ("railway", 6), ("train", 6), ("trains", 6), ("locomotive", 7),
+        ("metrotog", 6), ("railway", 3), ("train", 6), ("trains", 6), ("locomotive", 7),
         ("mz", 5), ("mx", 3), ("litra", 5), ("arriva tog", 7),
         ("lokaltog", 7), ("nesa", 3), ("njk", 4), ("sj", 3), ("sj rc", 5), ("bane danmark", 5),
         ("godstog", 7), ("damplokomotiv*", 7), ("diesellokomotiv*", 7), ("ellokomotiv*", 7),
@@ -158,11 +162,15 @@ import os
 TITLE_WEIGHT = 1.5       # ord i titlen
 TAG_WEIGHT = 1.0         # oevrige ord i tags
 DESC_WEIGHT = 0.6        # beskrivelser er ofte lange og stoejende
+ALBUM_WEIGHT = 1.5       # albums vaegter tungere end enkeltord i titel/tags
 STRONG_ALBUM = 6.0       # album med tydeligt emne (Trams, Cars in ..., Volvo B10M)
 MEDIUM_ALBUM = 5.0       # album med overvejende ét emne, men ogsaa andet (Sporvejsmuseet: sporvogne + DAB-busser)
 WEAK_ALBUM = 3.0         # maerkealbum (Toyota, Mercedes, Scania ...) - kan indeholde flere typer
 MIN_SCORE = 3.0          # under dette -> misc (et enkelt tag som "bus" er nok, hvis intet andet modsiger)
 MIN_LEAD = 1.5           # foerste skal vaere mindst 1,5 point foran nr. 2
+
+# Albums der aldrig skal stemme (indeholder alle typer). Smaa bogstaver.
+IGNORED_ALBUMS = {"danish tramway museum"}
 
 # Generiske tags. Din far har 'bus' paa trams/tog/lastbiler, saa kun 3 point.
 GENERIC_TAGS = {"bus": ("bus", 3), "buses": ("bus", 3), "car": ("car", 3), "cars": ("car", 3),
@@ -188,8 +196,6 @@ def guess_album_category(title):
     has = lambda w: re.search(r"\b" + w + r"\b", t)
     if has("trucks?") and has("bus\\w*"):
         return None, 0                                   # fx 'Staaling Truck/Busdealer = Scrapyard'
-    if "tramway museum" in t:
-        return "tram", MEDIUM_ALBUM                      # mest sporvogne, men ogsaa DAB-busser (de har selv et busalbum)
     if "museum" in t and "car museum" not in t:
         return None, 0
     if has("trams?"):
@@ -250,20 +256,27 @@ def classify(albums, title, tags, description):
     # 1) albums: hver kategori faar sin staerkeste stemme (flere ens albums tæller ikke dobbelt)
     votes = {}
     for a in albums:
+        if (a or "").strip().lower() in IGNORED_ALBUMS:
+            continue                                     # 'Danish Tramway Museum' stemmer aldrig
         cat, strength = album_category(a)
         if cat in total and strength > votes.get(cat, (0, ""))[0]:
             votes[cat] = (strength, a)
     for cat, (strength, a) in votes.items():
-        total[cat] += strength
+        total[cat] += strength * ALBUM_WEIGHT
         why.append(f"album {a[:25]!r}={cat}")
 
     # 2) generiske tags (bus, car, tram ...) faar faste, lave point
     tag_words = [w for w in re.split(r"[,\s]+", (tags or "").lower()) if w]
+    # specifikke tags (tram/train/truck/car) betyder noget; 'bus' staar paa ca. 70 % af billederne
+    specific = {GENERIC_TAGS[w][0] for w in tag_words
+                if w in GENERIC_TAGS and w != "carspotting"} - {"bus"}
     seen = set()
     for w in tag_words:
         if w in GENERIC_TAGS and w not in seen:
             seen.add(w)
             cat, pts = GENERIC_TAGS[w]
+            if cat == "bus" and specific:
+                continue                                 # 'bus'-tagget ignoreres naar der er et mere specifikt tag
             total[cat] += pts
     # Din far kopierer ofte titlen ind som tag - et ord skal ikke taelle to gange.
     title_norm = _norm(title)
@@ -282,6 +295,21 @@ def classify(albums, title, tags, description):
         words += [f"{w}→{c}" for w in (t_hits[c] + g_hits[c])[:2]]
 
     cat, best, lead = _best(total)
+
+    # Knap uafgjort: vinder den kategori der som den eneste af de tætte har et specifikt tag
+    if lead < MIN_LEAD and best >= MIN_SCORE:
+        close = [c for c, s in total.items() if best - s < MIN_LEAD]
+        pick = [c for c in close if c in specific]
+        if len(pick) == 1:
+            cat, lead = pick[0], MIN_LEAD
+            why.append(f"specifikt tag={cat}")
+        else:
+            # ellers: har kun EN af de taette kategorier et tydeligt album (din fars egen placering), vinder den
+            by_album = [c for c in close if c in votes and votes[c][0] >= STRONG_ALBUM]
+            if len(by_album) == 1:
+                cat, lead = by_album[0], MIN_LEAD
+                why.append(f"album afgoer={cat}")
+
     detail = "; ".join(why + words[:4] + ([f"tags: {','.join(sorted(seen))}"] if seen else []))
     if best < MIN_SCORE or lead < MIN_LEAD:
         return "misc", f"uklart ({cat} {best:.1f}, forspring {lead:.1f}) {detail}"[:240]

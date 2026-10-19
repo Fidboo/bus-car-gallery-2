@@ -534,3 +534,42 @@ def test_thumbnail_cards_know_their_full_photo_and_script_is_served(appmod):
     page = c.get("/category/bus").get_data(as_text=True)
     assert "prefetch.js" in page
     assert c.get("/static/prefetch.js").status_code == 200
+
+
+def test_back_link_returns_to_the_list_page_the_photo_is_on(appmod):
+    import re
+    conn = appmod.get_db()
+    conn.executemany(
+        "INSERT INTO images (title, tags, filename, thumbnail, uploaded_at, category) VALUES (?,?,?,?,?,?)",
+        [(f"Bus {i}", "volvo" if i % 2 else "scania", f"f{i}.jpg", f"t{i}.jpg", "2024-01-01T00:00:00", "bus")
+         for i in range(1, 61)])
+    conn.commit()
+    conn.close()
+    per_page = appmod.PER_PAGE
+    c = appmod.app.test_client()
+
+    def back(image_id, query=""):
+        html = c.get(f"/image/{image_id}?cat=bus&q={query}").get_data(as_text=True)
+        return re.search(r'id="backLink" href="([^"]+)"', html).group(1).replace("&amp;", "&")
+
+    # newest first: id 60 is position 1. Page 1 holds positions 1..per_page.
+    assert back(60) == "/category/bus?q="                       # first photo -> page 1 (no page param)
+    assert back(60 - per_page + 1) == "/category/bus?q="        # last photo on page 1
+    assert back(60 - per_page) == "/category/bus?q=&page=2"     # first photo on page 2
+    assert back(60 - 2 * per_page) == "/category/bus?q=&page=3"
+    assert back(1) == "/category/bus?q=&page=3"                 # oldest photo (position 60) -> page 3
+
+    # the same holds inside a search: position counts only the matching photos
+    html = c.get("/category/bus?q=volvo&page=2").get_data(as_text=True)
+    on_page_two = [int(m) for m in re.findall(r"/image/(\d+)\?", html)]
+    assert on_page_two and all(back(i, "volvo") == "/category/bus?q=volvo&page=2" for i in on_page_two)
+
+    # photos in an album have no pages: back goes to the album
+    conn = appmod.get_db()
+    conn.execute("INSERT INTO albums (name, created_at) VALUES ('A', '2024-01-01')")
+    album_id = conn.execute("SELECT id FROM albums WHERE name='A'").fetchone()[0]
+    conn.execute("UPDATE images SET album_id = ? WHERE id = 1", (album_id,))
+    conn.commit()
+    conn.close()
+    html = c.get(f"/image/1?album={album_id}").get_data(as_text=True)
+    assert f'id="backLink" href="/albums/{album_id}"' in html

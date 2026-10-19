@@ -4,13 +4,31 @@
 
 <p class="back-link">
 {% if album_param %}
-    <a href="{{ url_for('album_detail', album_id=album_param) }}">&larr; Back to album</a>
+    <a id="backLink" href="{{ url_for('album_detail', album_id=album_param) }}">&larr; Back to album</a>
 {% elif cat_param %}
-    <a href="{{ url_for('category_view', slug=cat_param, q=q_param) }}">&larr; Back to {{ category_label }}</a>
+    <a id="backLink" href="{{ url_for('category_view', slug=cat_param, q=q_param, page=(back_page if back_page > 1 else None)) }}">&larr; Back to {{ category_label }}</a>
 {% else %}
     <a href="{{ url_for('gallery') }}">&larr; Home</a>
 {% endif %}
 </p>
+<script>
+// Came straight from that list? Then behave exactly like the browser's Back
+// button (same page, same scroll position). Otherwise the link above already
+// points at the right page of the list.
+(function () {
+    var link = document.getElementById('backLink');
+    if (!link || !document.referrer) return;
+    function key(u) {
+        var x = new URL(u, location.href);
+        return x.origin + x.pathname + '|' + (x.searchParams.get('q') || '') + '|' + (x.searchParams.get('page') || '1');
+    }
+    try { if (key(document.referrer) !== key(link.href)) return; } catch (e) { return; }
+    link.addEventListener('click', function (e) {
+        if (e.button !== 0 || e.ctrlKey || e.metaKey || e.shiftKey || e.altKey) return;   // keep "open in new tab"
+        if (history.length > 1) { e.preventDefault(); history.back(); }
+    });
+})();
+</script>
 
 <div class="detail">
     <div class="detail-media">

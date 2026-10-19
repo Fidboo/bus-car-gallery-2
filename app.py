@@ -910,8 +910,13 @@ def image_detail(image_id):
             next_full_url = media_url("uploads", nxt["filename"])
     conn.close()
 
+    # The list page this photo sits on (24 per page, newest first - the same
+    # order as the category page), so "Back" returns to e.g. page 4, not page 1.
+    back_page = (position - 1) // PER_PAGE + 1 if not album_param else 1
+
     return render_template(
         "detail.html",
+        back_page=back_page,
         next_full_url=next_full_url,
         image=row,
         image_albums=image_albums,

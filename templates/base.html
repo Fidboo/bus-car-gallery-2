@@ -4,6 +4,10 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>{% block title %}Vehicle Gallery{% endblock %}</title>
+    <meta name="description" content="{% block description %}A personal collection of vehicle photographs: cars, buses, trucks, trams and trains. Browse by category and download the originals.{% endblock %}">
+    {% block robots %}{% endblock %}
+    <link rel="canonical" href="{% block canonical %}{{ absolute_url(request.path) }}{% endblock %}">
+    {% block head_extra %}{% endblock %}
     {% if image_origin %}<link rel="preconnect" href="{{ image_origin }}" crossorigin>{% endif %}
     <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
     <script src="{{ url_for('static', filename='prefetch.js') }}" defer></script>

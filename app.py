@@ -5,17 +5,20 @@ import logging
 import os
 import secrets
 import sqlite3
+import re
 import time
+import unicodedata
 import uuid
 import zlib
 from collections import Counter
 from datetime import datetime, timezone
 from functools import wraps
 from urllib.parse import urlparse
+from xml.sax.saxutils import escape as xml_escape
 
 from flask import (
     Flask, render_template, request, redirect, url_for,
-    session, send_from_directory, flash, abort, jsonify, g
+    session, send_from_directory, flash, abort, jsonify, g, Response
 )
 from werkzeug.security import check_password_hash, generate_password_hash
 from werkzeug.utils import secure_filename
@@ -113,6 +116,12 @@ app.config.update(
     PERMANENT_SESSION_LIFETIME=7 * 24 * 3600,  # stay logged in for a week
     SEND_FILE_MAX_AGE_DEFAULT=365 * 24 * 3600,  # file names are unique & immutable
 )
+
+# Public address of the site, e.g. https://galleri.example.dk (no trailing
+# slash). Used for canonical links, the sitemap and robots.txt, which must
+# contain full https:// addresses. If empty, the address of the current request
+# is used - but behind a proxy that can come out as http://, so set it in production.
+SITE_URL = os.environ.get("SITE_URL", "").strip().rstrip("/")
 
 # Optional contact email. If left empty, the "Contact us" link is hidden.
 CONTACT_EMAIL = os.environ.get("CONTACT_EMAIL", "").strip()
@@ -645,6 +654,65 @@ def format_display_date(iso_date):
 app.jinja_env.filters["fmtdate"] = format_display_date
 
 
+# --- SEO helpers: URL slugs, alt texts, absolute URLs -----------------------
+_SLUG_TRANSLIT = {"æ": "ae", "ø": "oe", "å": "aa", "ß": "ss", "đ": "d", "ł": "l"}
+
+
+def slugify(text, max_len=60):
+    """'Volvo B10M, Århus 1998' -> 'volvo-b10m-aarhus-1998'."""
+    text = (text or "").lower()
+    for src, dst in _SLUG_TRANSLIT.items():
+        text = text.replace(src, dst)
+    text = unicodedata.normalize("NFKD", text).encode("ascii", "ignore").decode("ascii")
+    text = re.sub(r"[^a-z0-9]+", "-", text).strip("-")
+    if len(text) > max_len:
+        text = text[:max_len].rsplit("-", 1)[0] or text[:max_len]
+    return text or "photo"
+
+
+ALT_MAX_LEN = 125   # longer alt texts get cut off by screen readers and search engines
+ALT_MAX_TAGS = 4
+
+
+def image_alt(image):
+    """'Title - tag1, tag2' built from the database row. Tags that are already
+    part of the title are left out, so it doesn't say 'Volvo B10M - volvo, b10m'."""
+    title = (image["title"] or "").strip()
+    title_lower = title.lower()
+    tags = []
+    for tag in (image["tags"] or "").split(","):
+        tag = tag.strip()
+        if tag and tag.lower() not in title_lower and tag.lower() not in [t.lower() for t in tags]:
+            tags.append(tag)
+    alt = title
+    used = 0
+    for tag in tags[:ALT_MAX_TAGS]:
+        candidate = f"{alt} - {tag}" if used == 0 else f"{alt}, {tag}"
+        if len(candidate) > ALT_MAX_LEN:
+            break
+        alt, used = candidate, used + 1
+    return alt
+
+
+def image_url(image, **kwargs):
+    """Clean URL of a photo page: /image/43418-volvo-b10m. Extra keyword
+    arguments (cat=, q=, album=) become the query string, as before."""
+    return url_for("image_detail", image_id=image["id"], slug=slugify(image["title"]),
+                   **{k: v for k, v in kwargs.items() if v not in (None, "")})
+
+
+def absolute_url(path_or_url):
+    """Full https://... address for a path such as /albums."""
+    if path_or_url.startswith(("http://", "https://")):
+        return path_or_url
+    base = SITE_URL or request.url_root.rstrip("/")
+    return base + path_or_url
+
+
+app.jinja_env.globals.update(image_alt=image_alt, image_url=image_url,
+                             absolute_url=absolute_url, slugify=slugify)
+
+
 # --- Photo URLs (local folders or Cloudflare R2) -----------------------------
 def media_url(area, filename):
     public = storage.public_url(area, filename)
@@ -772,8 +840,11 @@ def count_visit():
     # Site-wide page-view counter. Only counts page loads, not image/style
     # file requests or form submissions, and each page only once per visitor
     # per 24 hours (see first_view).
-    if request.path.startswith(("/media", "/static", "/download", "/healthz")):
+    if request.path.startswith(("/media", "/static", "/download", "/healthz",
+                                "/sitemap", "/robots.txt")):
         return
+    if re.fullmatch(r"/image/\d+", request.path):
+        return   # old-style address: it only redirects (301), the target page is counted
     page_key = "p" + format(zlib.crc32(request.path.encode("utf-8")), "x")
     if first_view(page_key):
         try:
@@ -791,6 +862,104 @@ def healthz():
     conn.execute("SELECT 1").fetchone()
     conn.close()
     return "ok", 200, {"Content-Type": "text/plain"}
+
+
+# ---------------------------------------------------------------------------
+# Routes: search engines (robots.txt + XML sitemap)
+#
+# /sitemap.xml is an index that points at smaller sitemaps - Google allows at
+# most 50,000 addresses per file, and the archive already has ~43,000 photos.
+# Photos are cut into fixed chunks ordered by id, so new uploads only ever
+# change the last file. Everything is built from the database on request, so
+# there is nothing to regenerate by hand.
+# ---------------------------------------------------------------------------
+SITEMAP_CHUNK = 10000
+
+
+def xml_response(body):
+    resp = Response(body, mimetype="application/xml")
+    resp.headers["Cache-Control"] = "public, max-age=3600"
+    return resp
+
+
+@app.route("/robots.txt")
+def robots_txt():
+    lines = [
+        "User-agent: *",
+        "Disallow: /login",
+        "Disallow: /logout",
+        "Disallow: /upload",
+        "Disallow: /stats",
+        "Disallow: /download/",
+        "Disallow: /api/",
+        "Disallow: /comment/",
+        "Disallow: /image/*/edit",
+        "Disallow: /image/*/comment",
+        "Disallow: /image/*/delete",
+        "",
+        f"Sitemap: {absolute_url('/sitemap.xml')}",
+        "",
+    ]
+    return Response("\n".join(lines), mimetype="text/plain")
+
+
+@app.route("/sitemap.xml")
+def sitemap_index():
+    conn = get_db()
+    total = conn.execute("SELECT COUNT(*) FROM images").fetchone()[0]
+    conn.close()
+    chunks = max(1, (total + SITEMAP_CHUNK - 1) // SITEMAP_CHUNK)
+    locs = [absolute_url("/sitemap-pages.xml")]
+    locs += [absolute_url(f"/sitemap-images-{n}.xml") for n in range(1, chunks + 1)]
+    body = ('<?xml version="1.0" encoding="UTF-8"?>\n'
+            '<sitemapindex xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n'
+            + "".join(f"  <sitemap><loc>{xml_escape(loc)}</loc></sitemap>\n" for loc in locs)
+            + "</sitemapindex>\n")
+    return xml_response(body)
+
+
+@app.route("/sitemap-pages.xml")
+def sitemap_pages():
+    conn = get_db()
+    albums = conn.execute(
+        "SELECT DISTINCT album_id FROM image_albums ORDER BY album_id").fetchall()
+    conn.close()
+    paths = ["/", "/albums"]
+    paths += [url_for("category_view", slug=c["slug"]) for c in CATEGORIES]
+    paths += [url_for("album_detail", album_id=a["album_id"]) for a in albums]
+    body = ('<?xml version="1.0" encoding="UTF-8"?>\n'
+            '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n'
+            + "".join(f"  <url><loc>{xml_escape(absolute_url(p))}</loc></url>\n" for p in paths)
+            + "</urlset>\n")
+    return xml_response(body)
+
+
+@app.route("/sitemap-images-<int:n>.xml")
+def sitemap_images(n):
+    if n < 1:
+        abort(404)
+    conn = get_db()
+    rows = conn.execute(
+        "SELECT id, title, filename FROM images ORDER BY id LIMIT ? OFFSET ?",
+        (SITEMAP_CHUNK, (n - 1) * SITEMAP_CHUNK),
+    ).fetchall()
+    conn.close()
+    if not rows and n > 1:
+        abort(404)
+    # Only <image:loc> is listed: Google ignores the old title/caption tags.
+    # No <lastmod>: the table has no "edited" date, and a wrong lastmod is
+    # worse than none.
+    parts = ['<?xml version="1.0" encoding="UTF-8"?>\n'
+             '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9" '
+             'xmlns:image="http://www.google.com/schemas/sitemap-image/1.1">\n']
+    for r in rows:
+        page = absolute_url(url_for("image_detail", image_id=r["id"], slug=slugify(r["title"])))
+        photo = absolute_url(media_url("uploads", r["filename"]))
+        parts.append(
+            f"  <url><loc>{xml_escape(page)}</loc>"
+            f"<image:image><image:loc>{xml_escape(photo)}</image:loc></image:image></url>\n")
+    parts.append("</urlset>\n")
+    return xml_response("".join(parts))
 
 
 # ---------------------------------------------------------------------------
@@ -815,7 +984,7 @@ def gallery():
             "count": count,
         })
     latest = conn.execute(
-        """SELECT id, title, thumbnail, filename, category
+        """SELECT id, title, tags, thumbnail, filename, category
            FROM images ORDER BY id DESC LIMIT 8"""
     ).fetchall()
     album_count = conn.execute("SELECT COUNT(*) FROM albums").fetchone()[0]
@@ -870,8 +1039,9 @@ def category_view(slug):
 # ---------------------------------------------------------------------------
 # Routes: single image detail (with browsing, comments, EXIF date)
 # ---------------------------------------------------------------------------
-@app.route("/image/<int:image_id>")
-def image_detail(image_id):
+@app.route("/image/<int:image_id>", defaults={"slug": None})
+@app.route("/image/<int:image_id>-<slug>")
+def image_detail(image_id, slug):
     conn = get_db()
     row = conn.execute(f"""
         SELECT images.*, albums.name AS album_name
@@ -881,6 +1051,17 @@ def image_detail(image_id):
     if row is None:
         conn.close()
         abort(404)
+
+    # One address per photo: /image/43418 and a stale or misspelt slug (e.g.
+    # after the title was edited) are sent permanently (301) to the current
+    # /image/43418-title. ?cat=/?q=/?album= are kept so browsing still works.
+    expected_slug = slugify(row["title"])
+    if slug != expected_slug:
+        conn.close()
+        target = url_for("image_detail", image_id=image_id, slug=expected_slug)
+        if request.query_string:
+            target += "?" + request.query_string.decode("utf-8", "replace")
+        return redirect(target, code=301)
 
     if first_view(f"i{image_id}"):
         conn.execute("UPDATE images SET views = views + 1 WHERE id = ?", (image_id,))
@@ -906,10 +1087,14 @@ def image_detail(image_id):
     ).fetchall()
     image_albums = get_albums_for_image(conn, image_id)
     next_full_url = None
+    prev_image = next_image = None
+    if prev_id:
+        prev_image = conn.execute("SELECT id, title FROM images WHERE id = ?", (prev_id,)).fetchone()
     if next_id:
-        nxt = conn.execute("SELECT filename FROM images WHERE id = ?", (next_id,)).fetchone()
-        if nxt:
-            next_full_url = media_url("uploads", nxt["filename"])
+        next_image = conn.execute(
+            "SELECT id, title, filename FROM images WHERE id = ?", (next_id,)).fetchone()
+        if next_image:
+            next_full_url = media_url("uploads", next_image["filename"])
     conn.close()
 
     # The list page this photo sits on (24 per page, newest first - the same
@@ -920,6 +1105,8 @@ def image_detail(image_id):
         "detail.html",
         back_page=back_page,
         next_full_url=next_full_url,
+        prev_image=prev_image,
+        next_image=next_image,
         image=row,
         image_albums=image_albums,
         comments=comments,

@@ -75,7 +75,7 @@ def test_pages_point_browsers_at_r2(r2app):
     html = page.get_data(as_text=True)
     assert f"{PUBLIC}/thumbnails/" in html and "/media/" not in html
     assert PUBLIC in page.headers["Content-Security-Policy"]
-    detail = c.get(f"/image/{image_id}").get_data(as_text=True)
+    detail = c.get(f"/image/{image_id}", follow_redirects=True).get_data(as_text=True)
     assert f"{PUBLIC}/uploads/" in detail
     assert c.get("/media/uploads/x.jpg").status_code == 404   # local route disabled
 

@@ -1,5 +1,22 @@
 {% extends "base.html" %}
-{% block title %}{{ image['title'] }}{% endblock %}
+{% block title %}{{ image['title'] }} - {{ category_label }} | Vehicle Gallery{% endblock %}
+{% block description %}{{ (image['caption'] or (image_alt(image) ~ '. Photo from a personal collection of ' ~ category_label|lower ~ '. The original can be downloaded.'))|truncate(155, True, '...') }}{% endblock %}
+{% block canonical %}{{ absolute_url(url_for('image_detail', image_id=image['id'], slug=slugify(image['title']))) }}{% endblock %}
+{% block head_extra %}
+    <meta property="og:type" content="website">
+    <meta property="og:title" content="{{ image['title'] }}">
+    <meta property="og:image" content="{{ absolute_url(media_url('uploads', image['filename'])) }}">
+    <meta property="og:url" content="{{ absolute_url(url_for('image_detail', image_id=image['id'], slug=slugify(image['title']))) }}">
+    <script type="application/ld+json">{{ {
+        "@context": "https://schema.org",
+        "@type": "ImageObject",
+        "name": image['title'],
+        "description": image['caption'] or image_alt(image),
+        "contentUrl": absolute_url(media_url('uploads', image['filename'])),
+        "thumbnailUrl": absolute_url(thumb_url(image['thumbnail'], image['filename'])),
+        "keywords": image['tags'],
+    }|tojson }}</script>
+{% endblock %}
 {% block content %}
 
 <p class="back-link">
@@ -42,7 +59,7 @@
             src="{{ thumb_url(image['thumbnail'], image['filename']) }}"
             data-full="{{ media_url('uploads', image['filename']) }}"
             {% if next_full_url %}data-next="{{ next_full_url }}"{% endif %}
-            alt="{{ image['title'] }}"
+            alt="{{ image_alt(image) }}"
             title="Click to view fullscreen"
             onclick="openLightbox()"
         >
@@ -66,14 +83,14 @@
         })();
         </script>
         <div class="detail-nav">
-            {% if prev_id %}
-                <a href="{{ url_for('image_detail', image_id=prev_id, cat=cat_param, q=q_param, album=album_param) }}">Previous</a>
+            {% if prev_image %}
+                <a href="{{ image_url(prev_image, cat=cat_param, q=q_param, album=album_param) }}">Previous</a>
             {% else %}
                 <span class="nav-disabled">Previous</span>
             {% endif %}
             <span class="nav-position">{{ position }} / {{ total_in_context }}</span>
-            {% if next_id %}
-                <a href="{{ url_for('image_detail', image_id=next_id, cat=cat_param, q=q_param, album=album_param) }}">Next</a>
+            {% if next_image %}
+                <a href="{{ image_url(next_image, cat=cat_param, q=q_param, album=album_param) }}">Next</a>
             {% else %}
                 <span class="nav-disabled">Next</span>
             {% endif %}

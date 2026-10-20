@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block title %}Vehicle Gallery{% endblock %}
+{% block title %}Vehicle Gallery - photos of cars, buses, trucks, trams and trains{% endblock %}
 {% block content %}
 
 <section class="intro">
@@ -38,8 +38,8 @@
 
 <div class="grid latest-grid">
     {% for image in latest %}
-    <a class="card" data-full="{{ media_url('uploads', image['filename']) }}" href="{{ url_for('image_detail', image_id=image['id'], cat=image['category']) }}">
-        <img src="{{ thumb_url(image['thumbnail'], image['filename']) }}" alt="{{ image['title'] }}" loading="lazy">
+    <a class="card" data-full="{{ media_url('uploads', image['filename']) }}" href="{{ image_url(image, cat=image['category']) }}">
+        <img src="{{ thumb_url(image['thumbnail'], image['filename']) }}" alt="{{ image_alt(image) }}" loading="lazy">
         <div class="card-body">
             <div class="card-title">{{ image['title'] }}</div>
             <div class="album-count">{{ (CATEGORIES|selectattr('slug', 'equalto', image['category'])|first).label }}</div>

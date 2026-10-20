@@ -1,5 +1,8 @@
 {% extends "base.html" %}
-{% block title %}{{ category.label }}{% endblock %}
+{% block title %}{{ category.label }} - photo collection{% if page > 1 %} (page {{ page }}){% endif %} | Vehicle Gallery{% endblock %}
+{% block description %}Browse {{ total }} photos of {{ category.label|lower }}. Search by brand, model or country and download the originals.{% endblock %}
+{% block robots %}{% if query %}<meta name="robots" content="noindex, follow">{% endif %}{% endblock %}
+{% block canonical %}{{ absolute_url(url_for('category_view', slug=category.slug, page=(page if page > 1 else None))) }}{% endblock %}
 {% block content %}
 
 <p class="back-link"><a href="{{ url_for('gallery') }}">&larr; Home</a></p>
@@ -38,8 +41,8 @@
 {% if images %}
 <div class="grid">
     {% for image in images %}
-    <a class="card" data-full="{{ media_url('uploads', image['filename']) }}" href="{{ url_for('image_detail', image_id=image['id'], cat=category.slug, q=query) }}">
-        <img src="{{ thumb_url(image['thumbnail'], image['filename']) }}" alt="{{ image['title'] }}" loading="lazy">
+    <a class="card" data-full="{{ media_url('uploads', image['filename']) }}" href="{{ image_url(image, cat=category.slug, q=query) }}">
+        <img src="{{ thumb_url(image['thumbnail'], image['filename']) }}" alt="{{ image_alt(image) }}" loading="lazy">
         <div class="card-body">
             <div class="card-title">{{ image['title'] }}</div>
             {% if image['album_name'] %}

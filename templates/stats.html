@@ -44,7 +44,7 @@
     <tbody>
         {% for image in top_images %}
         <tr>
-            <td><a href="{{ url_for('image_detail', image_id=image['id']) }}">{{ image['title'] }}</a></td>
+            <td><a href="{{ image_url(image) }}">{{ image['title'] }}</a></td>
             <td>{{ image['views'] }}</td>
         </tr>
         {% endfor %}

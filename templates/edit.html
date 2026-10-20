@@ -66,6 +66,6 @@
     <button type="submit">Save changes</button>
 </form>
 
-<p><a href="{{ url_for('image_detail', image_id=image['id']) }}">&larr; Back to photo</a></p>
+<p><a href="{{ image_url(image) }}">&larr; Back to photo</a></p>
 
 {% endblock %}

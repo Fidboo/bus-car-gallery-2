@@ -80,15 +80,15 @@ def test_detail_shows_all_albums_and_neighbors_follow_the_album(appmod):
     conn.close()
     c = appmod.app.test_client()
 
-    page = c.get(f"/image/{i1}").get_data(as_text=True)
+    page = c.get(f"/image/{i1}", follow_redirects=True).get_data(as_text=True)
     assert f"/albums/{a}" in page and f"/albums/{b}" in page and "Albums:" in page
 
-    single = c.get(f"/image/{i2}").get_data(as_text=True)
+    single = c.get(f"/image/{i2}", follow_redirects=True).get_data(as_text=True)
     assert "Album:" in single and "Albums:" not in single
 
     # browsing inside Beta (newest first): i2 -> i1, and Alpha's photo i3 is never offered
-    in_beta = c.get(f"/image/{i2}?album={b}").get_data(as_text=True)
-    assert f"/image/{i1}?" in in_beta and f"/image/{i3}?" not in in_beta
+    in_beta = c.get(f"/image/{i2}?album={b}", follow_redirects=True).get_data(as_text=True)
+    assert f"/image/{i1}-one?" in in_beta and f"/image/{i3}-three?" not in in_beta
 
 
 def test_category_badge_and_search_by_any_album_name(appmod):
@@ -122,7 +122,7 @@ def test_edit_sets_several_albums_and_main_album(appmod):
                 "csrf_token": token, "album_ids": [str(i) for i in album_ids]}
         return cl.post(f"/image/{iid}/edit", data=data)
 
-    form = cl.get(f"/image/{iid}/edit").get_data(as_text=True)
+    form = cl.get(f"/image/{iid}/edit", follow_redirects=True).get_data(as_text=True)
     assert 'name="album_ids"' in form and form.count("checked") >= 1
 
     assert edit([b, a, c_, b, 99999]).status_code == 302     # duplicates and unknown ids ignored

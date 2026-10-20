@@ -1,5 +1,6 @@
 {% extends "base.html" %}
-{% block title %}{{ album['name'] }}{% endblock %}
+{% block title %}{{ album['name'] }} - photo album | Vehicle Gallery{% endblock %}
+{% block description %}Photo album "{{ album['name'] }}" with {{ images|length }} photo{{ 's' if images|length != 1 else '' }} of cars, buses, trucks, trams and trains.{% endblock %}
 {% block content %}
 
 <p class="back-link"><a href="{{ url_for('albums_list') }}">&larr; All albums</a></p>
@@ -25,8 +26,8 @@
 {% if images %}
 <div class="grid">
     {% for image in images %}
-    <a class="card" data-full="{{ media_url('uploads', image['filename']) }}" href="{{ url_for('image_detail', image_id=image['id'], album=album['id']) }}">
-        <img src="{{ thumb_url(image['thumbnail'], image['filename']) }}" alt="{{ image['title'] }}" loading="lazy">
+    <a class="card" data-full="{{ media_url('uploads', image['filename']) }}" href="{{ image_url(image, album=album['id']) }}">
+        <img src="{{ thumb_url(image['thumbnail'], image['filename']) }}" alt="{{ image_alt(image) }}" loading="lazy">
         <div class="card-body">
             <div class="card-title">{{ image['title'] }}</div>
             {% if image['tags'] %}

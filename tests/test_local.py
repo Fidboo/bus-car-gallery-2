@@ -97,7 +97,7 @@ def test_delete_needs_csrf(appmod):
     login(c)
     image_id = upload(c).get_json()["id"]
     assert c.post(f"/image/{image_id}/delete").status_code == 400
-    assert c.get(f"/image/{image_id}").status_code == 200
+    assert c.get(f"/image/{image_id}", follow_redirects=True).status_code == 200
 
 
 def test_upload_makes_thumbnail_and_keeps_pixels_identical(appmod):
@@ -133,7 +133,7 @@ def test_upload_makes_thumbnail_and_keeps_pixels_identical(appmod):
     assert "Volvo_B10M.jpg" in r.headers["Content-Disposition"]
     assert r.data == stored
 
-    page = c.get(f"/image/{image_id}").get_data(as_text=True)
+    page = c.get(f"/image/{image_id}", follow_redirects=True).get_data(as_text=True)
     assert f"/media/uploads/{row['filename']}" in page
     assert f"/download/{image_id}" in page
     cat = c.get("/category/bus").get_data(as_text=True)
@@ -190,7 +190,7 @@ def test_comment_rate_limit_and_admin_delete(appmod):
     image_id = upload(admin).get_json()["id"]
 
     visitor = appmod.app.test_client()
-    visitor.get(f"/image/{image_id}")
+    visitor.get(f"/image/{image_id}", follow_redirects=True)
     with visitor.session_transaction() as s:
         token = s["_csrf"]
     for i in range(appmod.COMMENT_MAX + 2):
@@ -222,7 +222,7 @@ def test_comment_is_escaped(appmod):
         token = s["_csrf"]
     admin.post(f"/image/{image_id}/comment",
                data={"name": "<b>x</b>", "comment": "<script>alert(1)</script>", "csrf_token": token})
-    page = admin.get(f"/image/{image_id}").get_data(as_text=True)
+    page = admin.get(f"/image/{image_id}", follow_redirects=True).get_data(as_text=True)
     assert "<script>alert(1)</script>" not in page and "&lt;script&gt;" in page
 
 
@@ -235,7 +235,7 @@ def test_delete_removes_files_and_rows(appmod):
         token = s["_csrf"]
     assert c.post(f"/image/{image_id}/delete", data={"csrf_token": token}).status_code == 302
     assert os.listdir(appmod.UPLOAD_FOLDER) == [] and os.listdir(appmod.THUMB_FOLDER) == []
-    assert c.get(f"/image/{image_id}").status_code == 404
+    assert c.get(f"/image/{image_id}", follow_redirects=True).status_code == 404
 
 
 def test_edit_replaces_photo_and_cleans_old_files(appmod):
@@ -442,32 +442,32 @@ def test_views_count_once_per_visitor_and_skip_bots_and_owner(appmod):
         return n
 
     # the owner looking at their own photos is not counted
-    owner.get(f"/image/{image_id}")
+    owner.get(f"/image/{image_id}", follow_redirects=True)
     assert views() == 0
 
     ua = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0) Chrome/120"}
     visitor = appmod.app.test_client()
-    visitor.get(f"/image/{image_id}", headers=ua)
+    visitor.get(f"/image/{image_id}", headers=ua, follow_redirects=True)
     site_after_first = site_views()
     assert views() == 1 and site_after_first >= 1
 
     # reloading / opening it again does not count - neither photo nor page
     for _ in range(3):
-        visitor.get(f"/image/{image_id}", headers=ua)
+        visitor.get(f"/image/{image_id}", headers=ua, follow_redirects=True)
     assert views() == 1 and site_views() == site_after_first
 
     # a different photo/page from the same visitor does count
     other = upload(owner, title="Other", name="b.jpg").get_json()["id"]
-    visitor.get(f"/image/{other}", headers=ua)
+    visitor.get(f"/image/{other}", headers=ua, follow_redirects=True)
     assert site_views() == site_after_first + 1
 
     # a visitor without the cookie (new browser) counts as a new person
-    appmod.app.test_client().get(f"/image/{image_id}", headers=ua)
+    appmod.app.test_client().get(f"/image/{image_id}", headers=ua, follow_redirects=True)
     assert views() == 2
 
     # search engines and scripts are never counted, nor are HEAD requests
     for agent in ("Googlebot/2.1 (+http://www.google.com/bot.html)", "python-requests/2.31", ""):
-        appmod.app.test_client().get(f"/image/{image_id}", headers={"User-Agent": agent})
+        appmod.app.test_client().get(f"/image/{image_id}", headers={"User-Agent": agent}, follow_redirects=True)
     appmod.app.test_client().head(f"/image/{image_id}", headers=ua)
     assert views() == 2
 
@@ -475,7 +475,7 @@ def test_views_count_once_per_visitor_and_skip_bots_and_owner(appmod):
     old = int(time.time()) - appmod.VIEW_WINDOW - 60
     stale = appmod.app.test_client()
     stale.set_cookie(appmod.VIEW_COOKIE, f"i{image_id}.{old}")
-    stale.get(f"/image/{image_id}", headers=ua)
+    stale.get(f"/image/{image_id}", headers=ua, follow_redirects=True)
     assert views() == 3
 
 
@@ -489,7 +489,7 @@ def test_view_cookie_stays_small_and_ignores_garbage(appmod):
     ids = [upload(owner, title=f"t{i}", name=f"{i}.jpg", data=make_jpeg((400, 300))).get_json()["id"]
            for i in range(3)]
     for i in ids:
-        c.get(f"/image/{i}", headers=ua)
+        c.get(f"/image/{i}", headers=ua, follow_redirects=True)
     cookie = c.get_cookie(appmod.VIEW_COOKIE).value
     assert len(cookie) < 3000
 
@@ -501,7 +501,7 @@ def test_photo_page_shows_thumbnail_first_and_prefetches_next(appmod):
            for i in range(2)]
     newer, older = ids[1], ids[0]          # newest first: "next" from the newer one is the older
     c = appmod.app.test_client()
-    html = c.get(f"/image/{newer}?cat=bus").get_data(as_text=True)
+    html = c.get(f"/image/{newer}?cat=bus", follow_redirects=True).get_data(as_text=True)
     stored = {}
     conn = appmod.get_db()
     for i in ids:
@@ -516,7 +516,7 @@ def test_photo_page_shows_thumbnail_first_and_prefetches_next(appmod):
     assert f'rel="preload" as="image" href="{full}"' in html
     assert f'data-next="{next_full}"' in html
     # the oldest photo has no "next", so nothing to prefetch
-    assert 'data-next="' not in c.get(f"/image/{older}?cat=bus").get_data(as_text=True)
+    assert 'data-next="' not in c.get(f"/image/{older}?cat=bus", follow_redirects=True).get_data(as_text=True)
 
 
 def test_thumbnail_cards_know_their_full_photo_and_script_is_served(appmod):
@@ -549,7 +549,7 @@ def test_back_link_returns_to_the_list_page_the_photo_is_on(appmod):
     c = appmod.app.test_client()
 
     def back(image_id, query=""):
-        html = c.get(f"/image/{image_id}?cat=bus&q={query}").get_data(as_text=True)
+        html = c.get(f"/image/{image_id}?cat=bus&q={query}", follow_redirects=True).get_data(as_text=True)
         return re.search(r'id="backLink" href="([^"]+)"', html).group(1).replace("&amp;", "&")
 
     # newest first: id 60 is position 1. Page 1 holds positions 1..per_page.
@@ -561,7 +561,7 @@ def test_back_link_returns_to_the_list_page_the_photo_is_on(appmod):
 
     # the same holds inside a search: position counts only the matching photos
     html = c.get("/category/bus?q=volvo&page=2").get_data(as_text=True)
-    on_page_two = [int(m) for m in re.findall(r"/image/(\d+)\?", html)]
+    on_page_two = [int(m) for m in re.findall(r"/image/(\d+)-[^?\"]*\?", html)]
     assert on_page_two and all(back(i, "volvo") == "/category/bus?q=volvo&page=2" for i in on_page_two)
 
     # photos in an album have no pages: back goes to the album
@@ -571,5 +571,5 @@ def test_back_link_returns_to_the_list_page_the_photo_is_on(appmod):
     conn.execute("UPDATE images SET album_id = ? WHERE id = 1", (album_id,))
     conn.commit()
     conn.close()
-    html = c.get(f"/image/1?album={album_id}").get_data(as_text=True)
+    html = c.get(f"/image/1?album={album_id}", follow_redirects=True).get_data(as_text=True)
     assert f'id="backLink" href="/albums/{album_id}"' in html

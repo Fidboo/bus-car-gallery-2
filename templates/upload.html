@@ -265,12 +265,28 @@
     }
 
     // Albums: a ticked box = every selected photo is in that album, a dash = only some of them are.
+    // Ticked albums are sorted to the top, then partly ticked, then the rest (alphabetical).
     var albumBoxes = [];
-    function buildAlbumList() {
+    function albumRank(a, sel) {
+        // 0 = all selected photos are in the album, 1 = some of them, 2 = none
+        if (!sel.length) return 2;
+        var id = String(a.id);
+        var have = sel.filter(function (p) { return p.albumIds.indexOf(id) !== -1; }).length;
+        if (have === sel.length) return 0;
+        if (have > 0) return 1;
+        return 2;
+    }
+    function buildAlbumList(scrollTop) {
         var q = albumFilter.value.trim().toLowerCase();
+        var sel = selectedPhotos();
         albumList.textContent = '';
         albumBoxes = [];
-        ALBUMS.forEach(function (a) {
+
+        var ordered = ALBUMS.map(function (a, i) { return { a: a, i: i, r: albumRank(a, sel) }; })
+            .sort(function (x, y) { return x.r - y.r || x.i - y.i; });
+
+        ordered.forEach(function (item) {
+            var a = item.a;
             if (q && a.name.toLowerCase().indexOf(q) === -1) return;
             var id = String(a.id);
             var row = el('label', 'o-album-row');
@@ -282,13 +298,14 @@
                     if (!box.checked && i !== -1) p.albumIds.splice(i, 1);
                     updateTile(p);
                 });
-                refreshAlbumStates();
+                buildAlbumList(true);   // re-sort so ticked albums are at the top
             });
             row.appendChild(box); row.appendChild(el('span', '', a.name));
             albumList.appendChild(row);
             albumBoxes.push(box);
         });
         if (!albumBoxes.length) albumList.appendChild(el('div', 'o-album-empty', q ? 'No album matches "' + albumFilter.value.trim() + '"' : 'No albums yet'));
+        if (scrollTop === true) albumList.scrollTop = 0;
         refreshAlbumStates();
     }
     function refreshAlbumStates() {
@@ -311,7 +328,7 @@
         $('sideHead').textContent = n === 0 ? 'Select photos to edit' : 'Editing ' + n + ' photo' + (n === 1 ? '' : 's') + ':';
         var disabled = n === 0 || uploading;
         [fCategory, fTitle, fCaption, fTags, btnNewAlbum, $('btnAddTags')].forEach(function (c) { c.disabled = disabled; });
-        if (n === 0) { fCategory.value = ''; fTitle.value = ''; fTitle.placeholder = 'Add a title'; fCaption.value = ''; fCaption.placeholder = 'Add a description'; chips.textContent = ''; refreshAlbumStates(); return; }
+        if (n === 0) { fCategory.value = ''; fTitle.value = ''; fTitle.placeholder = 'Add a title'; fCaption.value = ''; fCaption.placeholder = 'Add a description'; chips.textContent = ''; buildAlbumList(); return; }
 
         var c = commonValue(sel, function (p) { return p.category; });
         fCategory.value = c.mixed ? MIXED : c.value;
@@ -321,7 +338,7 @@
         var cap = commonValue(sel, function (p) { return p.caption; });
         fCaption.value = cap.mixed ? '' : cap.value;
         fCaption.placeholder = cap.mixed ? 'Mixed – typing replaces all' : 'Add a description';
-        refreshAlbumStates();
+        buildAlbumList();
         renderChips();
     }
     function renderChips() {
@@ -369,7 +386,7 @@
     fTags.addEventListener('keydown', function (e) { if (e.key === 'Enter') { e.preventDefault(); addTagsFromInput(); } });
     fTags.addEventListener('blur', addTagsFromInput);
 
-    albumFilter.addEventListener('input', buildAlbumList);
+    albumFilter.addEventListener('input', function () { buildAlbumList(); });
     btnNewAlbum.addEventListener('click', function () {
         if (uploading || !selectedPhotos().length) return;
         var name = window.prompt('Name for the new album:');
@@ -384,12 +401,11 @@
                 if (!ALBUMS.some(function (a) { return a.id === r.id; })) ALBUMS.push({ id: r.id, name: r.name });
                 ALBUMS.sort(function (a, b) { return a.name.toLowerCase() < b.name.toLowerCase() ? -1 : 1; });
                 albumFilter.value = '';
-                buildAlbumList();
                 selectedPhotos().forEach(function (p) {
                     if (p.albumIds.indexOf(String(r.id)) === -1) p.albumIds.push(String(r.id));
                     updateTile(p);
                 });
-                refreshAlbumStates();
+                buildAlbumList(true);
             } else { showBanner('error', r.error || 'Could not create the album.'); }
         };
         xhr.onerror = function () { showBanner('error', 'Network error while creating the album.'); };

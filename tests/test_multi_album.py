@@ -197,3 +197,32 @@ def test_new_upload_with_album_is_added_to_the_join_table(appmod):
     assert [x["album_id"] for x in conn.execute(
         "SELECT album_id FROM image_albums WHERE image_id=?", (iid,))] == [a]
     conn.close()
+
+
+def test_upload_into_several_albums_at_once(appmod):
+    conn = _db(appmod)
+    a, b, c3 = _album(conn, "Alpha"), _album(conn, "Beta"), _album(conn, "Gamma")
+    conn.close()
+    c = appmod.app.test_client()
+    login(c)
+    with c.session_transaction() as s:
+        token = s["_csrf"]
+    r = c.post("/upload/file", data={
+        "photo": (io.BytesIO(make_jpeg((1200, 800))), "x.jpg"), "category": "bus", "title": "x", "tags": "",
+        "album_ids": [str(b), str(a), "99999", "not-a-number", str(b)]},     # unknown / duplicate ids are ignored
+        headers={"X-CSRF-Token": token}, content_type="multipart/form-data")
+    body = r.get_json()
+    assert body["ok"] is True
+    assert set(body["timing"]) >= {"save", "check", "optimize", "thumbnail", "store", "database", "total"}
+    iid = body["id"]
+    conn = _db(appmod)
+    got = [x["album_id"] for x in conn.execute(
+        "SELECT album_id FROM image_albums WHERE image_id=? ORDER BY album_id", (iid,))]
+    main = conn.execute("SELECT album_id FROM images WHERE id=?", (iid,)).fetchone()[0]
+    conn.close()
+    assert got == sorted([a, b])        # both albums, nothing else
+    assert main == b                    # the first one listed is the main album
+    # the photo shows up on both album pages
+    for album in (a, b):
+        assert f"/image/{iid}" in c.get(f"/albums/{album}").get_data(as_text=True)
+    assert f"/image/{iid}" not in c.get(f"/albums/{c3}").get_data(as_text=True)

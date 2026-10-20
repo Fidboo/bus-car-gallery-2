@@ -44,12 +44,15 @@
             </div>
 
             <div class="o-side-section">
-                <label for="fAlbum">Album</label>
-                <select id="fAlbum"></select>
+                <label for="fAlbumFilter">Albums <span class="o-hint">tick as many as you like</span></label>
+                <input type="text" id="fAlbumFilter" placeholder="Search albums…" autocomplete="off">
+                <div class="o-albums" id="albumList" role="group" aria-label="Albums"></div>
+                <button type="button" class="o-link-btn" id="btnNewAlbum">＋ Create new album…</button>
             </div>
 
             <p class="o-side-note">Changes apply to every selected photo.<br>
-            Click a photo's name to rename it.</p>
+            Click a photo's name to rename it.<br>
+            Photos are added in the order shown here: the first photo ends up first in the gallery.</p>
         </aside>
 
         <section class="o-main" id="dropZone">
@@ -73,9 +76,8 @@
     var CSRF_TOKEN = {{ csrf_token()|tojson }};
     var ALLOWED = ['jpg', 'jpeg', 'png', 'gif', 'webp'];
     var MIXED = '__mixed__';
-    var NEW_ALBUM = '__new__';
 
-    var photos = [];            // {id, file, url, title, category, caption, tags[], albumId, status, progress, error, flag}
+    var photos = [];            // {id, file, url, title, category, caption, tags[], albumIds[], status, progress, error, flag}
     var selected = new Set();   // selected photo ids
     var lastIdx = null;
     var uploading = false;
@@ -85,7 +87,8 @@
 
     function $(id) { return document.getElementById(id); }
     var grid = $('grid'), fileInput = $('fileInput'), emptyState = $('emptyState');
-    var fCategory = $('fCategory'), fTitle = $('fTitle'), fCaption = $('fCaption'), fTags = $('fTags'), fAlbum = $('fAlbum');
+    var fCategory = $('fCategory'), fTitle = $('fTitle'), fCaption = $('fCaption'), fTags = $('fTags');
+    var albumList = $('albumList'), albumFilter = $('fAlbumFilter'), btnNewAlbum = $('btnNewAlbum');
     var chips = $('chips'), banner = $('banner'), btnUpload = $('btnUpload');
 
     // ---------- helpers ----------
@@ -119,7 +122,7 @@
             if (ALLOWED.indexOf(ext) === -1) { skipped++; return; }
             var p = {
                 id: nextId++, file: file, url: URL.createObjectURL(file),
-                title: baseName(file.name), category: '', caption: '', tags: [], albumId: '',
+                title: baseName(file.name), category: '', caption: '', tags: [], albumIds: [],
                 status: 'pending', progress: 0, error: '', flag: false
             };
             photos.push(p);
@@ -176,12 +179,13 @@
             t.descEl.title = p.caption.trim() ? p.caption : 'Click to add a description';
         }
         t.bar.style.width = (p.status === 'done' ? 100 : p.progress) + '%';
-        t.msg.textContent = p.status === 'done' ? '✓ Uploaded' : (p.status === 'error' ? p.error : (p.status === 'uploading' ? p.progress + '%' : ''));
+        t.msg.textContent = p.status === 'done' ? ('✓ ' + (p.seconds !== undefined ? p.seconds + ' s' + (p.serverSeconds !== undefined ? ' (server ' + Math.round(p.serverSeconds) + ' s)' : '') : 'Uploaded')) : (p.status === 'error' ? p.error : (p.status === 'uploading' ? p.progress + '%' : ''));
 
         var bits = [];
         if (p.status === 'done') { t.sub.textContent = catLabel(p.category); t.sub.className = 'o-sub'; return; }
         if (p.category) bits.push(catLabel(p.category)); else bits.push('⚠ Needs category');
         if (p.tags.length) bits.push(p.tags.length + ' tag' + (p.tags.length === 1 ? '' : 's'));
+        if (p.albumIds.length) bits.push(p.albumIds.length + ' album' + (p.albumIds.length === 1 ? '' : 's'));
         t.sub.textContent = bits.join(' · ');
         t.sub.className = 'o-sub' + (p.category ? '' : ' o-sub-warn');
     }
@@ -257,14 +261,44 @@
         var ph = el('option', '', 'Choose a category…'); ph.value = ''; fCategory.appendChild(ph);
         CATEGORIES.forEach(function (c) { var o = el('option', '', c.label); o.value = c.slug; fCategory.appendChild(o); });
         var m = el('option', '', 'Mixed'); m.value = MIXED; m.hidden = true; m.disabled = true; fCategory.appendChild(m);
-        buildAlbumSelect();
+        buildAlbumList();
     }
-    function buildAlbumSelect() {
-        fAlbum.textContent = '';
-        var none = el('option', '', 'No album'); none.value = ''; fAlbum.appendChild(none);
-        ALBUMS.forEach(function (a) { var o = el('option', '', a.name); o.value = String(a.id); fAlbum.appendChild(o); });
-        var nw = el('option', '', '＋ Create new album…'); nw.value = NEW_ALBUM; fAlbum.appendChild(nw);
-        var m = el('option', '', 'Mixed'); m.value = MIXED; m.hidden = true; m.disabled = true; fAlbum.appendChild(m);
+
+    // Albums: a ticked box = every selected photo is in that album, a dash = only some of them are.
+    var albumBoxes = [];
+    function buildAlbumList() {
+        var q = albumFilter.value.trim().toLowerCase();
+        albumList.textContent = '';
+        albumBoxes = [];
+        ALBUMS.forEach(function (a) {
+            if (q && a.name.toLowerCase().indexOf(q) === -1) return;
+            var id = String(a.id);
+            var row = el('label', 'o-album-row');
+            var box = el('input'); box.type = 'checkbox'; box.value = id;
+            box.addEventListener('change', function () {
+                selectedPhotos().forEach(function (p) {
+                    var i = p.albumIds.indexOf(id);
+                    if (box.checked && i === -1) p.albumIds.push(id);       // click order: the first album ticked is the main album
+                    if (!box.checked && i !== -1) p.albumIds.splice(i, 1);
+                    updateTile(p);
+                });
+                refreshAlbumStates();
+            });
+            row.appendChild(box); row.appendChild(el('span', '', a.name));
+            albumList.appendChild(row);
+            albumBoxes.push(box);
+        });
+        if (!albumBoxes.length) albumList.appendChild(el('div', 'o-album-empty', q ? 'No album matches "' + albumFilter.value.trim() + '"' : 'No albums yet'));
+        refreshAlbumStates();
+    }
+    function refreshAlbumStates() {
+        var sel = selectedPhotos();
+        albumBoxes.forEach(function (box) {
+            var have = sel.filter(function (p) { return p.albumIds.indexOf(box.value) !== -1; }).length;
+            box.checked = sel.length > 0 && have === sel.length;
+            box.indeterminate = have > 0 && have < sel.length;
+            box.disabled = sel.length === 0 || uploading;
+        });
     }
     function commonValue(list, fn) {
         var v = fn(list[0]);
@@ -276,8 +310,8 @@
         var n = sel.length;
         $('sideHead').textContent = n === 0 ? 'Select photos to edit' : 'Editing ' + n + ' photo' + (n === 1 ? '' : 's') + ':';
         var disabled = n === 0 || uploading;
-        [fCategory, fTitle, fCaption, fTags, fAlbum, $('btnAddTags')].forEach(function (c) { c.disabled = disabled; });
-        if (n === 0) { fCategory.value = ''; fTitle.value = ''; fTitle.placeholder = 'Add a title'; fCaption.value = ''; fCaption.placeholder = 'Add a description'; fAlbum.value = ''; chips.textContent = ''; return; }
+        [fCategory, fTitle, fCaption, fTags, btnNewAlbum, $('btnAddTags')].forEach(function (c) { c.disabled = disabled; });
+        if (n === 0) { fCategory.value = ''; fTitle.value = ''; fTitle.placeholder = 'Add a title'; fCaption.value = ''; fCaption.placeholder = 'Add a description'; chips.textContent = ''; refreshAlbumStates(); return; }
 
         var c = commonValue(sel, function (p) { return p.category; });
         fCategory.value = c.mixed ? MIXED : c.value;
@@ -287,8 +321,7 @@
         var cap = commonValue(sel, function (p) { return p.caption; });
         fCaption.value = cap.mixed ? '' : cap.value;
         fCaption.placeholder = cap.mixed ? 'Mixed – typing replaces all' : 'Add a description';
-        var al = commonValue(sel, function (p) { return p.albumId; });
-        fAlbum.value = al.mixed ? MIXED : al.value;
+        refreshAlbumStates();
         renderChips();
     }
     function renderChips() {
@@ -336,31 +369,31 @@
     fTags.addEventListener('keydown', function (e) { if (e.key === 'Enter') { e.preventDefault(); addTagsFromInput(); } });
     fTags.addEventListener('blur', addTagsFromInput);
 
-    fAlbum.addEventListener('change', function () {
-        var v = fAlbum.value;
-        if (v === MIXED) return;
-        if (v === NEW_ALBUM) {
-            var name = window.prompt('Name for the new album:');
-            if (!name || !name.trim()) { populateSidebar(); return; }
-            var xhr = new XMLHttpRequest();
-            xhr.open('POST', '/api/albums');
-            xhr.setRequestHeader('X-CSRF-Token', CSRF_TOKEN);
-            xhr.setRequestHeader('Content-Type', 'application/json');
-            xhr.onload = function () {
-                var r = {}; try { r = JSON.parse(xhr.responseText); } catch (e) {}
-                if (xhr.status === 200 && r.ok) {
-                    if (!ALBUMS.some(function (a) { return a.id === r.id; })) ALBUMS.push({ id: r.id, name: r.name });
-                    ALBUMS.sort(function (a, b) { return a.name.toLowerCase() < b.name.toLowerCase() ? -1 : 1; });
-                    buildAlbumSelect();
-                    selectedPhotos().forEach(function (p) { p.albumId = String(r.id); });
-                    populateSidebar();
-                } else { showBanner('error', r.error || 'Could not create the album.'); populateSidebar(); }
-            };
-            xhr.onerror = function () { showBanner('error', 'Network error while creating the album.'); populateSidebar(); };
-            xhr.send(JSON.stringify({ name: name }));
-            return;
-        }
-        selectedPhotos().forEach(function (p) { p.albumId = v; });
+    albumFilter.addEventListener('input', buildAlbumList);
+    btnNewAlbum.addEventListener('click', function () {
+        if (uploading || !selectedPhotos().length) return;
+        var name = window.prompt('Name for the new album:');
+        if (!name || !name.trim()) return;
+        var xhr = new XMLHttpRequest();
+        xhr.open('POST', '/api/albums');
+        xhr.setRequestHeader('X-CSRF-Token', CSRF_TOKEN);
+        xhr.setRequestHeader('Content-Type', 'application/json');
+        xhr.onload = function () {
+            var r = {}; try { r = JSON.parse(xhr.responseText); } catch (e) {}
+            if (xhr.status === 200 && r.ok) {
+                if (!ALBUMS.some(function (a) { return a.id === r.id; })) ALBUMS.push({ id: r.id, name: r.name });
+                ALBUMS.sort(function (a, b) { return a.name.toLowerCase() < b.name.toLowerCase() ? -1 : 1; });
+                albumFilter.value = '';
+                buildAlbumList();
+                selectedPhotos().forEach(function (p) {
+                    if (p.albumIds.indexOf(String(r.id)) === -1) p.albumIds.push(String(r.id));
+                    updateTile(p);
+                });
+                refreshAlbumStates();
+            } else { showBanner('error', r.error || 'Could not create the album.'); }
+        };
+        xhr.onerror = function () { showBanner('error', 'Network error while creating the album.'); };
+        xhr.send(JSON.stringify({ name: name }));
     });
 
     // ---------- toolbar ----------
@@ -437,11 +470,15 @@
         todo.forEach(function (p) { p.status = 'pending'; p.progress = 0; p.error = ''; p.flag = false; });
         refreshAll();
 
+        // The gallery shows the newest photo first. Sending the list from the
+        // bottom up makes the first photo in the list the newest one, so a batch
+        // appears in the gallery in exactly the order it has here.
+        var queue = todo.slice().reverse();
         var i = 0, ok = 0, failed = 0;
         (function next() {
-            if (i >= todo.length) { return finish(ok, failed); }
-            var p = todo[i++];
-            btnUpload.textContent = 'Uploading ' + i + ' of ' + todo.length + '…';
+            if (i >= queue.length) { return finish(ok, failed); }
+            var p = queue[i++];
+            btnUpload.textContent = 'Uploading ' + i + ' of ' + queue.length + '…';
             sendOne(p, function (success) {
                 if (success) { ok++; doneByCategory[p.category] = (doneByCategory[p.category] || 0) + 1; } else { failed++; }
                 next();
@@ -457,8 +494,9 @@
         fd.append('caption', p.caption);
         fd.append('tags', p.tags.join(', '));
         fd.append('category', p.category);
-        fd.append('album_id', p.albumId);
+        p.albumIds.forEach(function (id) { fd.append('album_ids', id); });
 
+        var startedAt = Date.now();
         var xhr = new XMLHttpRequest();
         xhr.open('POST', '/upload/file');
         xhr.setRequestHeader('X-CSRF-Token', CSRF_TOKEN);
@@ -467,7 +505,12 @@
         };
         xhr.onload = function () {
             var r = {}; try { r = JSON.parse(xhr.responseText); } catch (e) {}
-            if (xhr.status === 200 && r.ok) { p.status = 'done'; p.progress = 100; p.error = ''; updateTile(p); cb(true); }
+            if (xhr.status === 200 && r.ok) {
+                p.status = 'done'; p.progress = 100; p.error = '';
+                p.seconds = Math.round((Date.now() - startedAt) / 1000);
+                if (r.timing && r.timing.total !== undefined) p.serverSeconds = r.timing.total;
+                updateTile(p); cb(true);
+            }
             else {
                 p.status = 'error';
                 p.error = r.error || (xhr.status === 413 ? 'File too large (max 50 MB).' : 'Upload failed (' + xhr.status + ').');

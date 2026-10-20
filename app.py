@@ -1,6 +1,7 @@
 import hashlib
 import hmac
 import io
+import logging
 import os
 import secrets
 import sqlite3
@@ -120,6 +121,7 @@ os.makedirs(DATA_DIR, exist_ok=True)
 os.makedirs(TMP_FOLDER, exist_ok=True)
 
 # Where the photo files live: local folders, or Cloudflare R2 (see storage.py).
+app.logger.setLevel(logging.INFO)
 storage = storage_from_env(UPLOAD_FOLDER, THUMB_FOLDER)
 
 # Fixed vehicle categories shown as tiles on the homepage.
@@ -1163,6 +1165,22 @@ def logout():
 # ---------------------------------------------------------------------------
 # Routes: upload, edit, delete (password protected)
 # ---------------------------------------------------------------------------
+class _Stopwatch:
+    """Tiny helper: seconds spent per named step of one upload (shown in the
+    upload page and written to the server log, so slowness can be traced)."""
+    def __init__(self):
+        self.t0 = self.last = time.perf_counter()
+        self.steps = {}
+
+    def lap(self, name):
+        now = time.perf_counter()
+        self.steps[name] = self.steps.get(name, 0.0) + (now - self.last)
+        self.last = now
+
+    def skip(self):          # don't count the time since the last lap
+        self.last = time.perf_counter()
+
+
 def process_upload(file):
     """Check ONE uploaded photo, make its thumbnail and put both files in
     storage (local folder or R2). Returns (info, error)."""
@@ -1178,9 +1196,12 @@ def process_upload(file):
     tmp_full = os.path.join(TMP_FOLDER, "opt_" + unique_name)
     tmp_thumb = os.path.join(TMP_FOLDER, thumb_name)
     stored = []
+    watch = _Stopwatch()
+    g.upload_watch = watch
 
     try:
         file.save(tmp_path)
+        watch.lap("save")
 
         # Make sure it really is an image before we keep it.
         try:
@@ -1190,6 +1211,7 @@ def process_upload(file):
             return None, "That file doesn't look like a valid image."
 
         photo_taken_date = extract_exif_date(tmp_path)
+        watch.lap("check")
 
         # Lossless size reduction. If it doesn't make the file smaller (or
         # anything goes wrong) the uploaded file is stored exactly as it came.
@@ -1199,12 +1221,14 @@ def process_upload(file):
                 full_path = tmp_full
         except Exception:
             app.logger.exception("Lossless optimization failed, storing original")
+        watch.lap("optimize")
 
         thumb_ok = True
         try:
             make_thumbnail(full_path, tmp_thumb)
         except Exception:
             thumb_ok = False
+        watch.lap("thumbnail")
 
         try:
             storage.put("uploads", unique_name, full_path)
@@ -1212,6 +1236,7 @@ def process_upload(file):
             if thumb_ok:
                 storage.put("thumbnails", thumb_name, tmp_thumb)
                 stored.append(("thumbnails", thumb_name))
+            watch.lap("store")
         except Exception:
             app.logger.exception("Could not store uploaded photo")
             for area, name in stored:
@@ -1243,8 +1268,9 @@ def delete_stored_files(filename, thumbnail):
         app.logger.exception("Could not delete stored files %s / %s", filename, thumbnail)
 
 
-def save_new_image(conn, file, title, caption, tags, category, album_id):
-    """Validate and store ONE uploaded photo. Returns (image_id, error)."""
+def save_new_image(conn, file, title, caption, tags, category, album_ids):
+    """Validate and store ONE uploaded photo. `album_ids` is a list of album
+    ids (the first one becomes the photo's main album). Returns (image_id, error)."""
     if not file or not file.filename:
         return None, "No file received."
     if not allowed_file(file.filename):
@@ -1252,10 +1278,8 @@ def save_new_image(conn, file, title, caption, tags, category, album_id):
     if category not in CATEGORY_MAP:
         return None, "Please choose a category."
 
-    if album_id is not None:
-        exists = conn.execute("SELECT id FROM albums WHERE id = ?", (album_id,)).fetchone()
-        if exists is None:
-            album_id = None
+    album_ids = parse_album_ids(conn, [str(a) for a in (album_ids or [])])   # only albums that exist
+    album_id = album_ids[0] if album_ids else None
 
     title = (title or "").strip()[:200] or os.path.splitext(file.filename)[0][:200] or "Untitled"
     caption = (caption or "").strip()[:2000]
@@ -1275,15 +1299,17 @@ def save_new_image(conn, file, title, caption, tags, category, album_id):
              utc_now_iso(), album_id, category, caption,
              info["photo_taken_date"]),
         )
-        if album_id is not None:
-            conn.execute(
-                "INSERT OR IGNORE INTO image_albums (image_id, album_id) VALUES (?, ?)",
-                (cur.lastrowid, album_id),
-            )
+        conn.executemany(
+            "INSERT OR IGNORE INTO image_albums (image_id, album_id) VALUES (?, ?)",
+            [(cur.lastrowid, a) for a in album_ids],
+        )
         conn.commit()
     except Exception:
         delete_stored_files(info["filename"], info["thumbnail"])
         raise
+    watch = getattr(g, "upload_watch", None)
+    if watch:
+        watch.lap("database")
     invalidate_tag_cache()
     return cur.lastrowid, None
 
@@ -1304,6 +1330,10 @@ def upload_file():
     if not session.get("logged_in"):
         return jsonify(ok=False, error="You are logged out. Log in again, then retry."), 401
 
+    # Several albums per photo: repeated "album_ids" fields. The old single
+    # "album_id" field is still understood.
+    raw_albums = request.form.getlist("album_ids") + request.form.getlist("album_id")
+
     conn = get_db()
     try:
         image_id, error = save_new_image(
@@ -1313,14 +1343,20 @@ def upload_file():
             request.form.get("caption", ""),
             request.form.get("tags", ""),
             request.form.get("category", "").strip(),
-            parse_album_id(request.form.get("album_id")),
+            [a for a in (parse_album_id(r) for r in raw_albums) if a is not None],
         )
     finally:
         conn.close()
 
+    watch = getattr(g, "upload_watch", None)
+    timing = {k: round(v, 2) for k, v in watch.steps.items()} if watch else {}
+    if watch:
+        timing["total"] = round(time.perf_counter() - watch.t0, 2)
+        app.logger.info("upload %s: %s", "ok" if not error else "FAILED", timing)
+
     if error:
         return jsonify(ok=False, error=error), 400
-    return jsonify(ok=True, id=image_id)
+    return jsonify(ok=True, id=image_id, timing=timing)
 
 
 @app.route("/api/albums", methods=["POST"])

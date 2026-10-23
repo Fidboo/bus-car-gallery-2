@@ -1368,9 +1368,15 @@ class _Stopwatch:
         self.last = time.perf_counter()
 
 
-def process_upload(file):
+def process_upload(file, thumb_file=None, exif_head=None):
     """Check ONE uploaded photo, make its thumbnail and put both files in
-    storage (local folder or R2). Returns (info, error)."""
+    storage (local folder or R2). Returns (info, error).
+
+    The upload page normally shrinks the photo and makes the thumbnail in the
+    visitor's own browser and sends them ready-made (thumb_file, plus the first
+    bytes of the original in exif_head so the date taken can be read). Then
+    this server only checks and stores them, which needs very little memory.
+    Without thumb_file (old clients, PNG/GIF/WEBP) it does all the work itself."""
     if not file or not file.filename:
         return None, "No file received."
     if not allowed_file(file.filename):
@@ -1382,6 +1388,8 @@ def process_upload(file):
     tmp_path = os.path.join(TMP_FOLDER, unique_name)
     tmp_full = os.path.join(TMP_FOLDER, "opt_" + unique_name)
     tmp_thumb = os.path.join(TMP_FOLDER, thumb_name)
+    tmp_head = os.path.join(TMP_FOLDER, "head_" + unique_name)
+    prepared = bool(thumb_file and getattr(thumb_file, "filename", None) and ext in ("jpg", "jpeg"))
     stored = []
     watch = _Stopwatch()
     g.upload_watch = watch
@@ -1397,24 +1405,42 @@ def process_upload(file):
         except Exception:
             return None, "That file doesn't look like a valid image."
 
-        photo_taken_date = extract_exif_date(tmp_path)
+        if prepared:
+            try:
+                thumb_file.save(tmp_thumb)
+                with PILImage.open(tmp_thumb) as probe:
+                    probe.verify()
+            except Exception:
+                return None, "The thumbnail doesn't look like a valid image."
+            photo_taken_date = None
+            if exif_head and getattr(exif_head, "filename", None):
+                try:
+                    exif_head.save(tmp_head)
+                    photo_taken_date = extract_exif_date(tmp_head)
+                except Exception:
+                    photo_taken_date = None
+            if not photo_taken_date:
+                photo_taken_date = extract_exif_date(tmp_path)
+        else:
+            photo_taken_date = extract_exif_date(tmp_path)
         watch.lap("check")
 
         # Lossless size reduction. If it doesn't make the file smaller (or
         # anything goes wrong) the uploaded file is stored exactly as it came.
         full_path = tmp_path
         try:
-            if optimize_image(tmp_path, tmp_full, ext):
+            if not prepared and optimize_image(tmp_path, tmp_full, ext):
                 full_path = tmp_full
         except Exception:
             app.logger.exception("Lossless optimization failed, storing original")
         watch.lap("optimize")
 
         thumb_ok = True
-        try:
-            make_thumbnail(full_path, tmp_thumb)
-        except Exception:
-            thumb_ok = False
+        if not prepared:
+            try:
+                make_thumbnail(full_path, tmp_thumb)
+            except Exception:
+                thumb_ok = False
         watch.lap("thumbnail")
 
         try:
@@ -1440,7 +1466,7 @@ def process_upload(file):
             "photo_taken_date": photo_taken_date,
         }, None
     finally:
-        for leftover in (tmp_path, tmp_full, tmp_thumb):
+        for leftover in (tmp_path, tmp_full, tmp_thumb, tmp_head):
             if os.path.exists(leftover):
                 os.remove(leftover)
 
@@ -1455,7 +1481,7 @@ def delete_stored_files(filename, thumbnail):
         app.logger.exception("Could not delete stored files %s / %s", filename, thumbnail)
 
 
-def save_new_image(conn, file, title, caption, tags, category, album_ids):
+def save_new_image(conn, file, title, caption, tags, category, album_ids, thumb_file=None, exif_head=None):
     """Validate and store ONE uploaded photo. `album_ids` is a list of album
     ids (the first one becomes the photo's main album). Returns (image_id, error)."""
     if not file or not file.filename:
@@ -1472,7 +1498,7 @@ def save_new_image(conn, file, title, caption, tags, category, album_ids):
     caption = (caption or "").strip()[:2000]
     tags = normalize_tags(tags or "")
 
-    info, error = process_upload(file)
+    info, error = process_upload(file, thumb_file, exif_head)
     if error:
         return None, error
 
@@ -1531,6 +1557,8 @@ def upload_file():
             request.form.get("tags", ""),
             request.form.get("category", "").strip(),
             [a for a in (parse_album_id(r) for r in raw_albums) if a is not None],
+            request.files.get("thumb"),
+            request.files.get("exifhead"),
         )
     finally:
         conn.close()

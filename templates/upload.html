@@ -208,7 +208,7 @@
             t.descEl.title = p.caption.trim() ? p.caption : 'Click to add a description';
         }
         t.bar.style.width = (p.status === 'done' ? 100 : p.progress) + '%';
-        t.msg.textContent = p.status === 'done' ? ('✓ ' + (p.seconds !== undefined ? p.seconds + ' s' + (p.serverSeconds !== undefined ? ' (server ' + Math.round(p.serverSeconds) + ' s)' : '') : 'Uploaded')) : (p.status === 'error' ? p.error : (p.status === 'uploading' ? p.progress + '%' : ''));
+        t.msg.textContent = p.status === 'done' ? ('✓ ' + (p.seconds !== undefined ? p.seconds + ' s' + (p.serverSeconds !== undefined ? ' (server ' + Math.round(p.serverSeconds) + ' s)' : '') : 'Uploaded')) : (p.status === 'error' ? p.error : (p.status === 'uploading' ? (p.prep ? 'Preparing…' : p.progress + '%') : ''));
 
         var bits = [];
         if (p.status === 'done') { t.sub.textContent = catLabel(p.category); t.sub.className = 'o-sub'; return; }
@@ -531,17 +531,56 @@
         })();
     }
 
+    // Big JPEGs are shrunk here in the browser (this computer does the work, the
+    // server only stores the result). Calls back with
+    // {photo, thumb, head} or null (then the original is sent as it is).
+    var MAX_PX = 3840;
+    function canvasBlob(bmp, maxSide, quality, cb) {
+        var s = Math.min(1, maxSide / Math.max(bmp.width, bmp.height));
+        var c = document.createElement('canvas');
+        c.width = Math.max(1, Math.round(bmp.width * s)); c.height = Math.max(1, Math.round(bmp.height * s));
+        var ctx = c.getContext('2d');
+        ctx.imageSmoothingEnabled = true; ctx.imageSmoothingQuality = 'high';
+        ctx.drawImage(bmp, 0, 0, c.width, c.height);
+        c.toBlob(function (b) { c.width = c.height = 0; cb(b); }, 'image/jpeg', quality);
+    }
+    function prepareFile(file, cb) {
+        var ext = (file.name.split('.').pop() || '').toLowerCase();
+        if ((ext !== 'jpg' && ext !== 'jpeg') || !window.createImageBitmap || !HTMLCanvasElement.prototype.toBlob) { cb(null); return; }
+        createImageBitmap(file).then(function (bmp) {
+            var tooBig = Math.max(bmp.width, bmp.height) > MAX_PX;
+            canvasBlob(bmp, 500, 0.85, function (thumb) {
+                function finish(photo) {
+                    if (bmp.close) bmp.close();
+                    if (!thumb || !photo) { cb(null); return; }
+                    cb({ photo: photo, thumb: thumb, head: file.slice(0, 262144) });
+                }
+                if (!tooBig) { finish(file); return; }            // already small enough: keep the original untouched
+                canvasBlob(bmp, MAX_PX, 0.92, function (big) { finish(big && big.size < file.size ? big : file); });
+            });
+        }, function () { cb(null); });
+    }
+
     function sendOne(p, cb) {
-        p.status = 'uploading'; p.progress = 0; updateTile(p);
+        p.status = 'uploading'; p.progress = 0; p.prep = true; p.t0 = Date.now(); updateTile(p);
+        prepareFile(p.file, function (prep) { p.prep = false; sendPrepared(p, prep, cb); });
+    }
+
+    function sendPrepared(p, prep, cb) {
+        p.progress = 0; updateTile(p);
         var fd = new FormData();
-        fd.append('photo', p.file, p.file.name);
+        fd.append('photo', prep ? prep.photo : p.file, p.file.name);
+        if (prep) {
+            fd.append('thumb', prep.thumb, 'thumb.jpg');
+            fd.append('exifhead', prep.head, 'head.jpg');
+        }
         fd.append('title', p.title.trim());
         fd.append('caption', p.caption);
         fd.append('tags', p.tags.join(', '));
         fd.append('category', p.category);
         p.albumIds.forEach(function (id) { fd.append('album_ids', id); });
 
-        var startedAt = Date.now();
+        var startedAt = p.t0 || Date.now();
         var xhr = new XMLHttpRequest();
         xhr.open('POST', '/upload/file');
         xhr.setRequestHeader('X-CSRF-Token', CSRF_TOKEN);

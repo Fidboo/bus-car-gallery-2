@@ -121,7 +121,7 @@
             var ext = (file.name.split('.').pop() || '').toLowerCase();
             if (ALLOWED.indexOf(ext) === -1) { skipped++; return; }
             var p = {
-                id: nextId++, file: file, url: URL.createObjectURL(file),
+                id: nextId++, file: file, url: '',
                 title: baseName(file.name), category: '', caption: '', tags: [], albumIds: [],
                 status: 'pending', progress: 0, error: '', flag: false
             };
@@ -138,11 +138,40 @@
         refreshAll();
     }
 
+    // ---------- small previews ----------
+    // Showing the original file in every tile makes the browser decode all the
+    // full-size photos at once (13 x 24 MP), which freezes the page and delays
+    // the upload. Instead each photo is shrunk to a small preview, one at a time.
+    var previewQueue = [], previewBusy = false;
+    function runPreviews() {
+        if (previewBusy) return;
+        var job = previewQueue.shift();
+        if (!job) return;
+        previewBusy = true;
+        function done() { previewBusy = false; setTimeout(runPreviews, 30); }
+        function useBlob(blob) {
+            if (!blob || photos.indexOf(job.p) === -1) { done(); return; }
+            job.p.url = URL.createObjectURL(blob);
+            job.img.src = job.p.url;
+            done();
+        }
+        function fallback() { useBlob(job.p.file.size < 3e6 ? job.p.file : null); }
+        if (!window.createImageBitmap) { fallback(); return; }
+        createImageBitmap(job.p.file, { resizeWidth: 320, resizeQuality: 'low' }).then(function (bmp) {
+            var c = document.createElement('canvas');
+            c.width = bmp.width; c.height = bmp.height;
+            c.getContext('2d').drawImage(bmp, 0, 0);
+            if (bmp.close) bmp.close();
+            c.toBlob(useBlob, 'image/jpeg', 0.7);
+        }, fallback);
+    }
+
     // ---------- tiles ----------
     function createTile(p) {
         var root = el('div', 'o-tile');
         var thumb = el('div', 'o-thumb');
-        var img = el('img'); img.src = p.url; img.alt = ''; img.draggable = false;
+        var img = el('img'); img.alt = ''; img.draggable = false;
+        previewQueue.push({ p: p, img: img }); runPreviews();
         var check = el('div', 'o-check', '✓');
         var overlay = el('div', 'o-overlay');
         var barWrap = el('div', 'o-bar'); var bar = el('span'); barWrap.appendChild(bar);
@@ -434,7 +463,7 @@
         var t = tiles.get(p.id);
         if (t) t.root.remove();
         tiles.delete(p.id);
-        URL.revokeObjectURL(p.url);
+        if (p.url) URL.revokeObjectURL(p.url);
         photos.splice(photos.indexOf(p), 1);
     }
 
@@ -517,7 +546,10 @@
         xhr.open('POST', '/upload/file');
         xhr.setRequestHeader('X-CSRF-Token', CSRF_TOKEN);
         xhr.upload.onprogress = function (e) {
-            if (e.lengthComputable) { p.progress = Math.round(e.loaded / e.total * 100); updateTile(p); }
+            if (e.lengthComputable) {
+                var pr = Math.round(e.loaded / e.total * 100);
+                if (pr !== p.progress) { p.progress = pr; updateTile(p); }
+            }
         };
         xhr.onload = function () {
             var r = {}; try { r = JSON.parse(xhr.responseText); } catch (e) {}

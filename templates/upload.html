@@ -182,6 +182,39 @@
         refreshAll();
     }
 
+    // ---------- large preview (magnifier on a tile) ----------
+    var previewEl = null, previewPhoto = null, previewUrl = '';
+    function openPreview(p) {
+        if (!previewEl) {
+            previewEl = el('div', 'o-preview');
+            previewEl.innerHTML = '<img alt=""><div class="o-preview-name"></div>';
+            previewEl.addEventListener('click', closePreview);      // click anywhere outside the photo closes it
+            previewEl.querySelector('img').addEventListener('click', function (e) { e.stopPropagation(); });
+            document.body.appendChild(previewEl);
+        }
+        if (previewUrl) URL.revokeObjectURL(previewUrl);
+        previewPhoto = p;
+        previewUrl = URL.createObjectURL(p.file);          // the original, so the bus model can be read
+        previewEl.querySelector('img').src = previewUrl;
+        previewEl.querySelector('.o-preview-name').textContent = p.title + '   (' + (photos.indexOf(p) + 1) + ' / ' + photos.length + ' · ← → to browse, Esc to close)';
+        previewEl.classList.add('open');
+    }
+    function closePreview() {
+        if (!previewEl) return;
+        previewEl.classList.remove('open');
+        previewEl.querySelector('img').removeAttribute('src');
+        if (previewUrl) URL.revokeObjectURL(previewUrl);
+        previewUrl = ''; previewPhoto = null;
+    }
+    document.addEventListener('keydown', function (e) {
+        if (!previewPhoto) return;
+        if (e.key === 'Escape') closePreview();
+        else if (e.key === 'ArrowRight' || e.key === 'ArrowLeft') {
+            var i = photos.indexOf(previewPhoto) + (e.key === 'ArrowRight' ? 1 : -1);
+            if (i >= 0 && i < photos.length) openPreview(photos[i]);
+        }
+    });
+
     // ---------- tiles ----------
     function createTile(p) {
         var root = el('div', 'o-tile');
@@ -193,7 +226,11 @@
         var barWrap = el('div', 'o-bar'); var bar = el('span'); barWrap.appendChild(bar);
         var msg = el('div', 'o-msg');
         overlay.appendChild(barWrap); overlay.appendChild(msg);
-        thumb.appendChild(img); thumb.appendChild(check); thumb.appendChild(overlay);
+        var zoom = el('button', 'o-zoom'); zoom.type = 'button'; zoom.title = 'View large';
+        zoom.innerHTML = '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><circle cx="10" cy="10" r="6.5"/><path d="M15 15l6 6"/></svg>';
+        zoom.addEventListener('click', function (e) { e.stopPropagation(); openPreview(p); });
+        zoom.draggable = false;
+        thumb.appendChild(img); thumb.appendChild(check); thumb.appendChild(zoom); thumb.appendChild(overlay);
         var titleEl = el('div', 'o-title', p.title);
         titleEl.title = 'Click to rename';
         var descEl = el('div', 'o-desc');

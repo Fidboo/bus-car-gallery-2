@@ -520,3 +520,21 @@ code{background:var(--tile);padding:1px 6px;border-radius:4px}
 .o-tile.dragging { opacity: 0.4; }
 .o-tile.drop-before .o-thumb { box-shadow: -5px 0 0 0 var(--o-pink); }
 .o-tile.drop-after .o-thumb { box-shadow: 5px 0 0 0 var(--o-pink); }
+
+/* upload page: magnifier on a tile + large preview */
+.o-zoom {
+    position: absolute; bottom: 6px; left: 6px; width: 26px; height: 26px; padding: 0;
+    border-radius: 50%; background: rgba(0,0,0,0.6); border: 2px solid #fff; color: #fff;
+    display: flex; align-items: center; justify-content: center; cursor: zoom-in;
+    opacity: 0; transition: opacity 0.1s;
+}
+.o-tile:hover .o-zoom { opacity: 1; }
+.o-zoom:hover { background: var(--o-pink); border-color: var(--o-pink); }
+@media (hover: none) { .o-zoom { opacity: 1; } }
+.o-preview {
+    position: fixed; inset: 0; z-index: 1000; display: none; align-items: center; justify-content: center;
+    flex-direction: column; background: rgba(0,0,0,0.78); cursor: zoom-out; padding: 5vh 5vw;
+}
+.o-preview.open { display: flex; }
+.o-preview img { max-width: 90vw; max-height: 85vh; object-fit: contain; cursor: default; box-shadow: 0 6px 40px rgba(0,0,0,0.6); }
+.o-preview-name { color: #ddd; margin-top: 10px; font-size: 0.9rem; text-align: center; }

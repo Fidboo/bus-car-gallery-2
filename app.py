@@ -199,6 +199,13 @@ def init_db():
         )
     """)
     conn.execute("INSERT OR IGNORE INTO site_stats (key, value) VALUES ('total_visits', 0)")
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS tag_cache (
+            category TEXT PRIMARY KEY,
+            n_images INTEGER NOT NULL,
+            tags TEXT NOT NULL
+        )
+    """)
     # Remembers failed logins / posted comments per IP for the rate limits.
     conn.execute("""
         CREATE TABLE IF NOT EXISTS rate_events (
@@ -251,8 +258,63 @@ def init_db():
     conn.execute("CREATE INDEX IF NOT EXISTS idx_comments_image ON comments(image_id)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_rate_events ON rate_events(kind, ip, ts)")
 
+    setup_search_index(conn)
+
     conn.commit()
     conn.close()
+
+
+# Fast word search (SQLite FTS5). Each photo's title, tags, caption and album
+# names are kept in `images_fts`; database triggers keep it up to date whenever
+# a photo or album changes, by this app or by any tool. A search term matches
+# words that START with it ("volv" finds "Volvo"), which is also what
+# type-ahead suggestions need later. If this SQLite has no FTS5, search falls
+# back to the old (slower) LIKE search.
+FTS_OK = False
+
+
+def setup_search_index(conn):
+    global FTS_OK
+    try:
+        conn.execute("""
+            CREATE VIRTUAL TABLE IF NOT EXISTS images_fts USING fts5(
+                title, tags, caption, albums,
+                tokenize = 'unicode61 remove_diacritics 2', prefix = '2 3 4')
+        """)
+    except sqlite3.OperationalError:
+        FTS_OK = False
+        return
+    albums_of = ("(SELECT COALESCE(group_concat(a.name, ' '), '') FROM image_albums ia "
+                 "JOIN albums a ON a.id = ia.album_id WHERE ia.image_id = {id})")
+    triggers = {
+        "images_fts_ai": f"""AFTER INSERT ON images BEGIN
+            INSERT INTO images_fts(rowid, title, tags, caption, albums)
+            VALUES (new.id, new.title, new.tags, new.caption, {albums_of.format(id="new.id")}); END""",
+        "images_fts_au": f"""AFTER UPDATE OF title, tags, caption ON images BEGIN
+            UPDATE images_fts SET title = new.title, tags = new.tags, caption = new.caption
+            WHERE rowid = new.id; END""",
+        "images_fts_ad": """AFTER DELETE ON images BEGIN
+            DELETE FROM images_fts WHERE rowid = old.id; END""",
+        "images_fts_ia_i": f"""AFTER INSERT ON image_albums BEGIN
+            UPDATE images_fts SET albums = {albums_of.format(id="new.image_id")}
+            WHERE rowid = new.image_id; END""",
+        "images_fts_ia_d": f"""AFTER DELETE ON image_albums BEGIN
+            UPDATE images_fts SET albums = {albums_of.format(id="old.image_id")}
+            WHERE rowid = old.image_id; END""",
+        "images_fts_alb_u": f"""AFTER UPDATE OF name ON albums BEGIN
+            UPDATE images_fts SET albums = {albums_of.format(id="images_fts.rowid")}
+            WHERE rowid IN (SELECT image_id FROM image_albums WHERE album_id = new.id); END""",
+    }
+    for name, body in triggers.items():
+        conn.execute(f"CREATE TRIGGER IF NOT EXISTS {name} {body}")
+    # Fill (or refill, if it ever got out of step) from the photos table.
+    have = conn.execute("SELECT COUNT(*) FROM images_fts").fetchone()[0]
+    want = conn.execute("SELECT COUNT(*) FROM images").fetchone()[0]
+    if have != want:
+        conn.execute("DELETE FROM images_fts")
+        conn.execute(f"""INSERT INTO images_fts(rowid, title, tags, caption, albums)
+            SELECT id, title, tags, caption, {albums_of.format(id="images.id")} FROM images""")
+    FTS_OK = True
 
 
 init_db()
@@ -267,6 +329,9 @@ if storage.kind == "r2" and os.environ.get("AUTO_BACKUP", "0" if IS_DEV else "1"
 # Security helpers: login, CSRF, rate limits
 # ---------------------------------------------------------------------------
 def client_ip():
+    fly_ip = request.headers.get("Fly-Client-IP", "").strip()   # set by Fly's proxy
+    if fly_ip and not TRUST_CLOUDFLARE:
+        return fly_ip[:64]
     if TRUST_CLOUDFLARE:
         cf_ip = request.headers.get("CF-Connecting-IP", "").strip()
         if cf_ip:
@@ -331,6 +396,8 @@ def check_origin_secret():
 @app.before_request
 def csrf_protect():
     if request.method not in ("POST", "PUT", "PATCH", "DELETE"):
+        return None
+    if request.path == "/api/hit":      # anonymous page-view signal; changes nothing but a counter
         return None
     sent = request.form.get("csrf_token") or request.headers.get("X-CSRF-Token") or ""
     expected = session.get("_csrf", "")
@@ -552,6 +619,16 @@ def get_albums_for_image(conn, image_id):
 IMAGES_FROM = "FROM images LEFT JOIN albums ON images.album_id = albums.id"
 
 
+def fts_query(text):
+    """User text -> FTS5 query: every word must match, each as a word start."""
+    parts = []
+    for word in text.lower().split()[:8]:
+        word = re.sub(r"[^\w]+", " ", word, flags=re.UNICODE).strip()
+        for piece in word.split():
+            parts.append('"' + piece.replace('"', '""') + '"*')
+    return " ".join(parts)
+
+
 def build_filters(category=None, album_id=None, query=None):
     """WHERE clause (+ params) shared by the category page and prev/next."""
     where = ["1 = 1"]
@@ -565,7 +642,14 @@ def build_filters(category=None, album_id=None, query=None):
             "WHERE ia.image_id = images.id AND ia.album_id = ?)"
         )
         params.append(album_id)
-    if query:
+    if query and FTS_OK:
+        match = fts_query(query)
+        if match:
+            where.append("images.id IN (SELECT rowid FROM images_fts WHERE images_fts MATCH ?)")
+            params.append(match)
+        else:
+            where.append("0")
+    elif query:
         for term in query.lower().split():
             where.append(
                 "(LOWER(images.title) LIKE ? OR LOWER(images.tags) LIKE ? "
@@ -619,12 +703,33 @@ _tag_cache = {}
 
 def invalidate_tag_cache():
     _tag_cache.clear()
+    try:
+        conn = get_db()
+        conn.execute("DELETE FROM tag_cache")
+        conn.commit()
+        conn.close()
+    except sqlite3.OperationalError:
+        pass
 
 
 def top_tags_for(conn, slug):
+    """The 30 most used tags of a category. Counting needs every photo's tags,
+    so the result is kept in memory for a minute AND saved in the database
+    (so a restart doesn't make the first visitor wait). The saved copy is
+    thrown away when photos change, and is ignored if the category's photo
+    count no longer matches."""
     cached = _tag_cache.get(slug)
     if cached and cached[0] > time.time():
         return cached[1]
+    n_images = conn.execute("SELECT COUNT(*) FROM images WHERE category = ?", (slug,)).fetchone()[0]
+    try:
+        row = conn.execute("SELECT n_images, tags FROM tag_cache WHERE category = ?", (slug,)).fetchone()
+    except sqlite3.OperationalError:
+        row = None
+    if row is not None and row["n_images"] == n_images:
+        top = [t for t in row["tags"].split("\n") if t]
+        _tag_cache[slug] = (time.time() + TAG_CACHE_SECONDS, top)
+        return top
     counter = Counter()
     for r in conn.execute("SELECT tags FROM images WHERE category = ?", (slug,)):
         for t in (r["tags"] or "").split(","):
@@ -633,6 +738,12 @@ def top_tags_for(conn, slug):
                 counter[t] += 1
     top = sorted(t for t, _ in counter.most_common(30))
     _tag_cache[slug] = (time.time() + TAG_CACHE_SECONDS, top)
+    try:
+        conn.execute("INSERT OR REPLACE INTO tag_cache (category, n_images, tags) VALUES (?, ?, ?)",
+                     (slug, n_images, "\n".join(top)))
+        conn.commit()
+    except sqlite3.OperationalError:
+        pass
     return top
 
 
@@ -790,7 +901,7 @@ BOT_WORDS = ("bot", "crawl", "spider", "slurp", "preview", "facebookexternalhit"
 
 
 def is_countable_visitor():
-    if request.method != "GET" or session.get("logged_in"):
+    if request.method not in ("GET", "POST") or session.get("logged_in"):
         return False
     ua = request.headers.get("User-Agent", "").lower()
     return bool(ua) and not any(word in ua for word in BOT_WORDS)
@@ -835,25 +946,70 @@ def remember_views(resp):
     return resp
 
 
-@app.before_request
-def count_visit():
-    # Site-wide page-view counter. Only counts page loads, not image/style
-    # file requests or form submissions, and each page only once per visitor
-    # per 24 hours (see first_view).
-    if request.path.startswith(("/media", "/static", "/download", "/healthz",
-                                "/sitemap", "/robots.txt")):
-        return
-    if re.fullmatch(r"/image/\d+", request.path):
-        return   # old-style address: it only redirects (301), the target page is counted
-    page_key = "p" + format(zlib.crc32(request.path.encode("utf-8")), "x")
-    if first_view(page_key):
-        try:
-            conn = get_db()
+# Page views are counted by a tiny script in the page (see base.html) that
+# tells the server "this page was shown" once the page has loaded. Scrapers
+# that only download the HTML never run it, so they don't inflate the numbers.
+HIT_PATH = re.compile(
+    r"^(?:/|/albums|/albums/\d+|/category/[a-z0-9-]+|/image/(?P<image>\d+)(?:-[a-z0-9-]*)?)$")
+
+
+@app.route("/api/hit", methods=["POST"])
+def api_hit():
+    path = (request.get_data(as_text=True) or "")[:300].split("?")[0].split("#")[0]
+    m = HIT_PATH.match(path)
+    if not m or not is_countable_visitor():
+        return "", 204
+    image_id = m.group("image")
+    try:
+        conn = get_db()
+        if image_id and first_view(f"i{image_id}"):
+            conn.execute("UPDATE images SET views = views + 1 WHERE id = ?", (int(image_id),))
+        if first_view("p" + format(zlib.crc32(path.encode("utf-8")), "x")):
             conn.execute("UPDATE site_stats SET value = value + 1 WHERE key = 'total_visits'")
-            conn.commit()
-            conn.close()
-        except Exception:
-            pass
+        conn.commit()
+        conn.close()
+    except Exception:
+        pass
+    return "", 204
+
+
+# --- Slowing down scrapers ----------------------------------------------------
+# One address may load this many pages per minute (photos and thumbnails are
+# not pages and are not counted). Search-engine crawlers that identify
+# themselves are let through; everything else gets "429 Too Many Requests"
+# for a while. The counters live in memory (the app runs as one process).
+PAGE_LIMIT_PER_MIN = int(os.environ.get("PAGE_LIMIT_PER_MIN", "90"))
+SEARCH_LIMIT_PER_MIN = int(os.environ.get("SEARCH_LIMIT_PER_MIN", "20"))
+GOOD_BOTS = ("googlebot", "bingbot", "duckduckbot", "applebot")
+_page_hits = {}
+
+
+@app.before_request
+def slow_down_scrapers():
+    if request.method not in ("GET", "HEAD") or session.get("logged_in"):
+        return None
+    if request.path.startswith(("/media", "/static", "/download", "/healthz", "/sitemap", "/robots.txt")):
+        return None
+    ua = request.headers.get("User-Agent", "").lower()
+    if any(b in ua for b in GOOD_BOTS):
+        return None
+    now = time.time()
+    ip = client_ip()
+    kinds = [("page", PAGE_LIMIT_PER_MIN)]
+    if request.args.get("q"):
+        kinds.append(("search", SEARCH_LIMIT_PER_MIN))
+    if len(_page_hits) > 5000:
+        _page_hits.clear()
+    for kind, limit in kinds:
+        hits = [t for t in _page_hits.get((kind, ip), ()) if now - t < 60]
+        if len(hits) >= limit:
+            _page_hits[(kind, ip)] = hits
+            resp = Response("Too many requests - please slow down.", status=429, mimetype="text/plain")
+            resp.headers["Retry-After"] = "60"
+            return resp
+        hits.append(now)
+        _page_hits[(kind, ip)] = hits
+    return None
 
 
 @app.route("/healthz")
@@ -892,6 +1048,9 @@ def robots_txt():
         "Disallow: /stats",
         "Disallow: /download/",
         "Disallow: /api/",
+        "Disallow: /*?q=",
+        "Disallow: /*&q=",
+        "Crawl-delay: 5",
         "Disallow: /comment/",
         "Disallow: /image/*/edit",
         "Disallow: /image/*/comment",
@@ -1011,7 +1170,7 @@ def category_view(slug):
     where, params = build_filters(category=slug, query=query)
 
     conn = get_db()
-    total = conn.execute(f"SELECT COUNT(*) {IMAGES_FROM} WHERE {where}", params).fetchone()[0]
+    total = conn.execute(f"SELECT COUNT(*) FROM images WHERE {where}", params).fetchone()[0]
     rows = conn.execute(
         "SELECT images.*, albums.name AS album_name, "
         "(SELECT COUNT(*) FROM image_albums ia WHERE ia.image_id = images.id) AS album_total "
@@ -1062,10 +1221,6 @@ def image_detail(image_id, slug):
         if request.query_string:
             target += "?" + request.query_string.decode("utf-8", "replace")
         return redirect(target, code=301)
-
-    if first_view(f"i{image_id}"):
-        conn.execute("UPDATE images SET views = views + 1 WHERE id = ?", (image_id,))
-        conn.commit()
 
     album_param = request.args.get("album", type=int)
     cat_param = request.args.get("cat")

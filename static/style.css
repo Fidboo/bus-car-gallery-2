@@ -515,3 +515,8 @@ code{background:var(--tile);padding:1px 6px;border-radius:4px}
 .album-picker{max-height:240px;overflow:auto;border:1px solid var(--line);border-radius:8px;padding:8px 12px;margin:6px 0 4px}
 .album-option{display:flex;align-items:center;gap:8px;padding:3px 0;font-weight:400;cursor:pointer}
 .album-option input{width:auto;margin:0}
+
+/* upload page: drag to reorder */
+.o-tile.dragging { opacity: 0.4; }
+.o-tile.drop-before .o-thumb { box-shadow: -5px 0 0 0 var(--o-pink); }
+.o-tile.drop-after .o-thumb { box-shadow: 5px 0 0 0 var(--o-pink); }

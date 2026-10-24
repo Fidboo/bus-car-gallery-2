@@ -15,4 +15,7 @@ COPY . .
 
 EXPOSE 8080
 
-CMD [ "python3", "-m" , "flask", "run", "--host=0.0.0.0", "--port=8080"]
+# One worker with several threads: SQLite and the in-memory caches live in a
+# single process, and the small VM has little RAM. gunicorn is a real
+# production server (the old "flask run" is a development server).
+CMD ["gunicorn", "app:app", "--bind", "0.0.0.0:8080", "--workers", "1", "--threads", "4", "--timeout", "120", "--worker-tmp-dir", "/dev/shm", "--access-logfile", "-"]

@@ -166,6 +166,22 @@
         }, fallback);
     }
 
+    // ---------- reordering by drag and drop ----------
+    var dragIds = null;
+    function clearDropMarks() {
+        tiles.forEach(function (t) { t.root.classList.remove('drop-before', 'drop-after'); });
+    }
+    function moveDragged(target, after) {
+        var moving = photos.filter(function (q) { return dragIds.indexOf(q.id) !== -1; });   // keeps their current order
+        clearDropMarks();
+        photos = photos.filter(function (q) { return dragIds.indexOf(q.id) === -1; });
+        var at = photos.indexOf(target) + (after ? 1 : 0);
+        photos.splice.apply(photos, [at, 0].concat(moving));
+        photos.forEach(function (q) { grid.appendChild(tiles.get(q.id).root); });
+        dragIds = null;
+        refreshAll();
+    }
+
     // ---------- tiles ----------
     function createTile(p) {
         var root = el('div', 'o-tile');
@@ -185,6 +201,37 @@
         var sub = el('div', 'o-sub');
         root.appendChild(thumb); root.appendChild(titleEl); root.appendChild(descEl); root.appendChild(sub);
         grid.appendChild(root);
+
+        // Drag a photo to change the order
+        // they are uploaded in. Only the picture itself is the drag handle, so
+        // renaming and selecting text keep working.
+        thumb.title = 'Drag to change the upload order';
+        thumb.draggable = true;
+        thumb.addEventListener('dragstart', function (e) {
+            if (!editable(p) || uploading) { e.preventDefault(); return; }
+            dragIds = [p.id];      // one photo at a time, whatever is selected
+            e.dataTransfer.effectAllowed = 'move';
+            try { e.dataTransfer.setData('text/plain', 'photo'); } catch (err) {}
+            dragIds.forEach(function (id) { tiles.get(id).root.classList.add('dragging'); });
+        });
+        thumb.addEventListener('dragend', function () {
+            dragIds = null; clearDropMarks();
+            tiles.forEach(function (t) { t.root.classList.remove('dragging'); });
+        });
+        root.addEventListener('dragover', function (e) {
+            if (!dragIds || dragIds.indexOf(p.id) !== -1) return;
+            e.preventDefault(); e.dataTransfer.dropEffect = 'move';
+            var r = root.getBoundingClientRect();
+            var after = e.clientX > r.left + r.width / 2;
+            clearDropMarks();
+            root.classList.add(after ? 'drop-after' : 'drop-before');
+        });
+        root.addEventListener('drop', function (e) {
+            if (!dragIds || dragIds.indexOf(p.id) !== -1) return;
+            e.preventDefault();
+            var r = root.getBoundingClientRect();
+            moveDragged(p, e.clientX > r.left + r.width / 2);
+        });
 
         root.addEventListener('click', function (e) { handleSelect(p, e); });
         check.addEventListener('click', function (e) { e.stopPropagation(); toggle(p); refreshAll(); });
@@ -489,7 +536,7 @@
         photos.forEach(updateTile);
         emptyState.hidden = photos.length > 0;
         grid.hidden = photos.length === 0;
-        $('countInfo').textContent = photos.length ? selected.size + ' of ' + pendingPhotos().length + ' selected' : '';
+        $('countInfo').textContent = photos.length ? selected.size + ' of ' + pendingPhotos().length + ' selected · drag photos to change the upload order' : '';
         populateSidebar();
         refreshUploadButton();
     }

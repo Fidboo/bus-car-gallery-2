@@ -423,11 +423,17 @@ def test_album_search_filters_by_name(appmod):
     assert 'value="zzz"' in html
 
 
+def hit(client, path, headers=None):
+    """What the script in every page does once the page has loaded."""
+    return client.post("/api/hit", data=path, headers=headers or {}, content_type="text/plain")
+
+
 def test_views_count_once_per_visitor_and_skip_bots_and_owner(appmod):
     import time
     owner = appmod.app.test_client()
     login(owner)
     image_id = upload(owner, title="Counted").get_json()["id"]
+    page = f"/image/{image_id}-counted"
 
     def views():
         conn = appmod.get_db()
@@ -441,41 +447,44 @@ def test_views_count_once_per_visitor_and_skip_bots_and_owner(appmod):
         conn.close()
         return n
 
-    # the owner looking at their own photos is not counted
-    owner.get(f"/image/{image_id}", follow_redirects=True)
-    assert views() == 0
-
     ua = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0) Chrome/120"}
+
+    # just downloading the page (a scraper) counts for nothing; the owner never counts
+    appmod.app.test_client().get(page, headers=ua)
+    hit(owner, page, ua)
+    assert views() == 0 and site_views() == 0
+
     visitor = appmod.app.test_client()
-    visitor.get(f"/image/{image_id}", headers=ua, follow_redirects=True)
+    assert hit(visitor, page, ua).status_code == 204
     site_after_first = site_views()
-    assert views() == 1 and site_after_first >= 1
+    assert views() == 1 and site_after_first == 1
 
     # reloading / opening it again does not count - neither photo nor page
     for _ in range(3):
-        visitor.get(f"/image/{image_id}", headers=ua, follow_redirects=True)
+        hit(visitor, page, ua)
     assert views() == 1 and site_views() == site_after_first
 
     # a different photo/page from the same visitor does count
     other = upload(owner, title="Other", name="b.jpg").get_json()["id"]
-    visitor.get(f"/image/{other}", headers=ua, follow_redirects=True)
+    hit(visitor, f"/image/{other}-other", ua)
     assert site_views() == site_after_first + 1
 
     # a visitor without the cookie (new browser) counts as a new person
-    appmod.app.test_client().get(f"/image/{image_id}", headers=ua, follow_redirects=True)
+    hit(appmod.app.test_client(), page, ua)
     assert views() == 2
 
-    # search engines and scripts are never counted, nor are HEAD requests
+    # search engines and scripts are never counted; neither are made-up addresses
     for agent in ("Googlebot/2.1 (+http://www.google.com/bot.html)", "python-requests/2.31", ""):
-        appmod.app.test_client().get(f"/image/{image_id}", headers={"User-Agent": agent}, follow_redirects=True)
-    appmod.app.test_client().head(f"/image/{image_id}", headers=ua)
+        hit(appmod.app.test_client(), page, {"User-Agent": agent})
+    hit(appmod.app.test_client(), "/etc/passwd", ua)
+    hit(appmod.app.test_client(), "/image/999999-nothing", ua)
     assert views() == 2
 
     # after 24 hours the same visitor counts again
     old = int(time.time()) - appmod.VIEW_WINDOW - 60
     stale = appmod.app.test_client()
     stale.set_cookie(appmod.VIEW_COOKIE, f"i{image_id}.{old}")
-    stale.get(f"/image/{image_id}", headers=ua, follow_redirects=True)
+    hit(stale, page, ua)
     assert views() == 3
 
 
@@ -485,13 +494,35 @@ def test_view_cookie_stays_small_and_ignores_garbage(appmod):
     ua = {"User-Agent": "Mozilla/5.0 Chrome/120"}
     c = appmod.app.test_client()
     c.set_cookie(appmod.VIEW_COOKIE, ",,x,.5,i1.abc,%s" % ("z" * 50 + ".1"))
-    assert c.get("/", headers=ua).status_code == 200
+    assert hit(c, "/", ua).status_code == 204
     ids = [upload(owner, title=f"t{i}", name=f"{i}.jpg", data=make_jpeg((400, 300))).get_json()["id"]
            for i in range(3)]
     for i in ids:
-        c.get(f"/image/{i}", headers=ua, follow_redirects=True)
+        hit(c, f"/image/{i}", ua)
     cookie = c.get_cookie(appmod.VIEW_COOKIE).value
     assert len(cookie) < 3000
+
+
+def test_scrapers_get_slowed_down_but_search_engines_and_owner_do_not(appmod, monkeypatch):
+    owner = appmod.app.test_client()
+    login(owner)
+    monkeypatch.setattr(appmod, "PAGE_LIMIT_PER_MIN", 5)
+    monkeypatch.setattr(appmod, "SEARCH_LIMIT_PER_MIN", 3)
+    appmod._page_hits.clear()
+    ua = {"User-Agent": "Mozilla/5.0 Chrome/120"}
+    c = appmod.app.test_client()
+    codes = [c.get("/category/bus?q=a%d" % i, headers=ua).status_code for i in range(5)]
+    assert codes == [200, 200, 200, 429, 429]                       # searches: 3 a minute
+    r = c.get("/category/bus?q=zzz", headers=ua)
+    assert r.status_code == 429 and r.headers["Retry-After"] == "60"
+    for _ in range(3):
+        assert c.get("/", headers=ua).status_code in (200, 429)
+    assert c.get("/static/style.css", headers=ua).status_code == 200      # files are never limited
+    assert c.get("/robots.txt", headers=ua).status_code == 200
+    google = {"User-Agent": "Mozilla/5.0 (compatible; Googlebot/2.1)"}
+    assert all(c.get("/category/bus?q=x%d" % i, headers=google).status_code == 200 for i in range(10))
+    assert all(owner.get("/category/bus?q=x%d" % i, headers=ua).status_code == 200 for i in range(10))
+    appmod._page_hits.clear()
 
 
 def test_photo_page_shows_thumbnail_first_and_prefetches_next(appmod):

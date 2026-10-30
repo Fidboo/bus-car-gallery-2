@@ -538,3 +538,12 @@ code{background:var(--tile);padding:1px 6px;border-radius:4px}
 .o-preview.open { display: flex; }
 .o-preview img { max-width: 90vw; max-height: 85vh; object-fit: contain; cursor: default; box-shadow: 0 6px 40px rgba(0,0,0,0.6); }
 .o-preview-name { color: #ddd; margin-top: 10px; font-size: 0.9rem; text-align: center; }
+
+/* stats: Cloudflare visitor numbers */
+.stat-sub{color:var(--muted);font-size:.85rem;margin-top:4px}
+.cf-days{display:flex;align-items:flex-end;gap:3px;height:140px;margin:10px 0 30px;padding-bottom:18px;position:relative}
+.cf-day{flex:1;height:100%;display:flex;flex-direction:column;justify-content:flex-end;align-items:center;position:relative;min-width:0}
+.cf-bar{display:block;width:100%;background:var(--accent);border-radius:3px 3px 0 0;min-height:2px}
+.cf-date{position:absolute;bottom:-18px;font-size:.7rem;color:var(--muted)}
+.cf-columns{display:grid;grid-template-columns:1fr 1fr;gap:30px}
+@media (max-width:760px){.cf-columns{grid-template-columns:1fr}.cf-date{display:none}}

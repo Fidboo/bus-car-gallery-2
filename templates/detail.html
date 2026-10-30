@@ -23,7 +23,7 @@
 {% if album_param %}
     <a id="backLink" href="{{ url_for('album_detail', album_id=album_param) }}">&larr; Back to album</a>
 {% elif cat_param %}
-    <a id="backLink" href="{{ url_for('category_view', slug=cat_param, q=q_param, page=(back_page if back_page > 1 else None)) }}">&larr; Back to {{ category_label }}</a>
+    <a id="backLink" href="{{ url_for('category_view', slug=cat_param, q=(q_param or None), page=(back_page if back_page > 1 else None)) }}">&larr; Back to {{ category_label }}</a>
 {% else %}
     <a href="{{ url_for('gallery') }}">&larr; Home</a>
 {% endif %}
@@ -84,13 +84,13 @@
         </script>
         <div class="detail-nav">
             {% if prev_image %}
-                <a href="{{ image_url(prev_image, cat=cat_param, q=q_param, album=album_param) }}">Previous</a>
+                <a href="{{ image_url(prev_image, cat=cat_param, q=(q_param or None), album=album_param) }}">Previous</a>
             {% else %}
                 <span class="nav-disabled">Previous</span>
             {% endif %}
             <span class="nav-position">{{ position }} / {{ total_in_context }}</span>
             {% if next_image %}
-                <a href="{{ image_url(next_image, cat=cat_param, q=q_param, album=album_param) }}">Next</a>
+                <a href="{{ image_url(next_image, cat=cat_param, q=(q_param or None), album=album_param) }}">Next</a>
             {% else %}
                 <span class="nav-disabled">Next</span>
             {% endif %}

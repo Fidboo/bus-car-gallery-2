@@ -4,6 +4,69 @@
 
 <h1>Stats</h1>
 
+<h2>Visitors <span class="hint">(Cloudflare Web Analytics - real browsers, bots filtered out)</span></h2>
+{% if cf and cf.ok %}
+<div class="stats-summary">
+    {% for key, label in [('day', 'Last 24 hours'), ('week', 'Last 7 days'), ('month', 'Last 30 days')] %}
+    <div class="stat-box">
+        <div class="stat-number">{{ cf[key].visits }}</div>
+        <div class="stat-label">Visits · {{ label }}</div>
+        <div class="stat-sub">{{ cf[key].views }} page views</div>
+    </div>
+    {% endfor %}
+</div>
+
+{% if cf.daily %}
+<h3>Page views per day (last 30 days)</h3>
+<div class="cf-days">
+    {% for d in cf.daily %}
+    <div class="cf-day" title="{{ d.date }}: {{ d.views }} page views, {{ d.visits }} visits">
+        <span class="cf-bar" style="height: {{ [d.pct, 2]|max }}%"></span>
+        <span class="cf-date">{{ d.date[8:10] }}</span>
+    </div>
+    {% endfor %}
+</div>
+{% endif %}
+
+<div class="cf-columns">
+    <div>
+        <h3>Most viewed pages (30 days)</h3>
+        <table class="stats-table">
+            <thead><tr><th>Page</th><th>Views</th></tr></thead>
+            <tbody>
+            {% for p in cf.pages %}
+                <tr><td><a href="{{ p.path }}">{{ p.label }}</a></td><td>{{ p.views }}</td></tr>
+            {% else %}
+                <tr><td colspan="2" class="hint">No visits yet.</td></tr>
+            {% endfor %}
+            </tbody>
+        </table>
+    </div>
+    <div>
+        <h3>Countries (30 days)</h3>
+        <table class="stats-table">
+            <thead><tr><th>Country</th><th>Visits</th></tr></thead>
+            <tbody>
+            {% for c in cf.countries %}<tr><td>{{ c.name }}</td><td>{{ c.visits }}</td></tr>{% endfor %}
+            </tbody>
+        </table>
+        <h3>Came from (30 days)</h3>
+        <table class="stats-table">
+            <thead><tr><th>Website</th><th>Page views</th></tr></thead>
+            <tbody>
+            {% for r in cf.referers %}<tr><td>{{ r.host }}</td><td>{{ r.views }}</td></tr>{% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+{% elif cf_configured %}
+<p class="hint">Could not fetch the numbers from Cloudflare right now ({{ cf.error }}). Try again in a minute.</p>
+{% else %}
+<p class="hint">Cloudflare numbers are not set up yet (needs CF_API_TOKEN and CF_ACCOUNT_ID).</p>
+{% endif %}
+
+<h2>This site's own counter</h2>
+<p class="hint">Counted by the site itself since the last reset. Per-photo numbers below come from this counter.</p>
 <div class="stats-summary">
     <div class="stat-box">
         <div class="stat-number">{{ total_visits }}</div>

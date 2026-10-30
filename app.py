@@ -820,6 +820,8 @@ def absolute_url(path_or_url):
     if path_or_url.startswith(("http://", "https://")):
         return path_or_url
     base = SITE_URL or request.url_root.rstrip("/")
+    if not IS_DEV and base.startswith("http://"):
+        base = "https://" + base[len("http://"):]   # the site is only served over https
     return base + path_or_url
 
 
@@ -1051,8 +1053,13 @@ def robots_txt():
         "Disallow: /stats",
         "Disallow: /download/",
         "Disallow: /api/",
+        # Searches are not crawled - but an EMPTY q= (old links) is allowed.
         "Disallow: /*?q=",
         "Disallow: /*&q=",
+        "Allow: /*?q=$",
+        "Allow: /*?q=&",
+        "Allow: /*&q=$",
+        "Allow: /*&q=&",
         "Crawl-delay: 5",
         "Disallow: /comment/",
         "Disallow: /image/*/edit",
@@ -1850,6 +1857,116 @@ def delete_image(image_id):
 # ---------------------------------------------------------------------------
 # Routes: stats (private)
 # ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# Visitor numbers from Cloudflare Web Analytics, shown on the stats page.
+# Cloudflare counts real browsers and filters bots, which our own counter
+# can't do well. Needs three Fly secrets:
+#   CF_API_TOKEN   - API token with "Account Analytics: Read"
+#   CF_ACCOUNT_ID  - the long id in the dashboard address
+#   CF_SITE_TAG    - optional; without it the numbers are picked by host name
+# Results are kept for 10 minutes so the API isn't asked on every view.
+# ---------------------------------------------------------------------------
+CF_API_TOKEN = os.environ.get("CF_API_TOKEN", "").strip()
+CF_ACCOUNT_ID = os.environ.get("CF_ACCOUNT_ID", "").strip()
+CF_SITE_TAG = os.environ.get("CF_SITE_TAG", "").strip()
+CF_HOST = os.environ.get("CF_HOST", urlparse(SITE_URL).hostname or "b12ble.com").strip()
+CF_CACHE_SECONDS = 600
+_cf_cache = {"until": 0, "data": None}
+
+def _cf_query(account, site_filter, d1, d7, d30):
+    """GraphQL text. Values are inlined (json-quoted) so no Cloudflare type
+    names are needed."""
+    import json
+    q = json.dumps
+
+    def f(since):
+        return "{AND: [{datetime_geq: %s}, {OR: [%s]}]}" % (q(since), site_filter)
+    return """{ viewer { accounts(filter: {accountTag: %s}) {
+      day: rumPageloadEventsAdaptiveGroups(filter: %s, limit: 1) { count sum { visits } }
+      week: rumPageloadEventsAdaptiveGroups(filter: %s, limit: 1) { count sum { visits } }
+      month: rumPageloadEventsAdaptiveGroups(filter: %s, limit: 1) { count sum { visits } }
+      daily: rumPageloadEventsAdaptiveGroups(filter: %s, limit: 31, orderBy: [date_ASC]) { count sum { visits } dimensions { date } }
+      pages: rumPageloadEventsAdaptiveGroups(filter: %s, limit: 25, orderBy: [count_DESC]) { count dimensions { requestPath } }
+      countries: rumPageloadEventsAdaptiveGroups(filter: %s, limit: 10, orderBy: [count_DESC]) { count sum { visits } dimensions { countryName } }
+      referers: rumPageloadEventsAdaptiveGroups(filter: %s, limit: 10, orderBy: [count_DESC]) { count dimensions { refererHost } }
+    } } }""" % (q(account), f(d1), f(d7), f(d30), f(d30), f(d30), f(d30), f(d30))
+
+
+def cloudflare_configured():
+    return bool(CF_API_TOKEN and CF_ACCOUNT_ID)
+
+
+def _cf_iso(seconds_ago):
+    return datetime.fromtimestamp(time.time() - seconds_ago, timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def fetch_cloudflare_stats():
+    """{"ok": True, ...numbers...} or {"ok": False, "error": "..."}; never raises."""
+    if not cloudflare_configured():
+        return {"ok": False, "error": "not configured"}
+    if _cf_cache["data"] is not None and _cf_cache["until"] > time.time():
+        return _cf_cache["data"]
+    import json
+    import urllib.request
+    if CF_SITE_TAG:
+        site = "{siteTag: %s}" % json.dumps(CF_SITE_TAG)
+    else:
+        site = "{requestHost: %s}, {requestHost: %s}" % (json.dumps(CF_HOST), json.dumps("www." + CF_HOST))
+    body = json.dumps({"query": _cf_query(CF_ACCOUNT_ID, site, _cf_iso(86400),
+                                          _cf_iso(7 * 86400), _cf_iso(30 * 86400))}).encode()
+    req = urllib.request.Request(
+        "https://api.cloudflare.com/client/v4/graphql", data=body, method="POST",
+        headers={"Authorization": f"Bearer {CF_API_TOKEN}", "Content-Type": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=8) as resp:
+            payload = json.loads(resp.read().decode())
+        if payload.get("errors"):
+            raise RuntimeError("; ".join(e.get("message", "?") for e in payload["errors"])[:300])
+        acc = payload["data"]["viewer"]["accounts"][0]
+
+        def total(rows):
+            row = rows[0] if rows else {}
+            return {"views": row.get("count", 0), "visits": (row.get("sum") or {}).get("visits", 0)}
+
+        data = {"ok": True, "day": total(acc["day"]), "week": total(acc["week"]),
+                "month": total(acc["month"])}
+        data["daily"] = [{"date": r["dimensions"]["date"], "views": r["count"],
+                          "visits": r["sum"]["visits"]} for r in acc["daily"]]
+        data["countries"] = [{"name": r["dimensions"]["countryName"] or "?", "views": r["count"],
+                              "visits": r["sum"]["visits"]} for r in acc["countries"]]
+        data["referers"] = [{"host": r["dimensions"]["refererHost"] or "(direct / none)", "views": r["count"]}
+                            for r in acc["referers"]]
+        data["pages"] = [{"path": r["dimensions"]["requestPath"], "views": r["count"]} for r in acc["pages"]]
+    except Exception as exc:  # network, token, Cloudflare changes ...
+        app.logger.warning("Cloudflare stats failed: %s", exc)
+        data = {"ok": False, "error": str(exc)[:300]}
+        _cf_cache.update(until=time.time() + 60, data=data)       # retry after a minute
+        return data
+    _cf_cache.update(until=time.time() + CF_CACHE_SECONDS, data=data)
+    return data
+
+
+def label_paths(conn, pages):
+    """Readable names for Cloudflare's top pages (photo titles, categories)."""
+    out = []
+    for p in pages:
+        path = p["path"] or "/"
+        label = path
+        m = re.match(r"^/image/(\d+)", path)
+        if m:
+            row = conn.execute("SELECT title FROM images WHERE id = ?", (int(m.group(1)),)).fetchone()
+            label = row["title"] if row else path
+        elif path.startswith("/category/"):
+            cat = CATEGORY_MAP.get(path.split("/")[2])
+            label = (cat["label"] if cat else path) + " (category)"
+        elif path == "/":
+            label = "Front page"
+        elif path == "/albums":
+            label = "Albums"
+        out.append({**p, "label": label})
+    return out
+
+
 @app.route("/stats")
 @login_required
 def stats():
@@ -1873,10 +1990,17 @@ def stats():
 
     total_images = conn.execute("SELECT COUNT(*) FROM images").fetchone()[0]
     total_comments = conn.execute("SELECT COUNT(*) FROM comments").fetchone()[0]
+    cf = fetch_cloudflare_stats()
+    if cf.get("ok"):
+        cf = {**cf, "pages": label_paths(conn, cf["pages"])}
+        top = max([d["views"] for d in cf["daily"]] or [1]) or 1
+        cf["daily"] = [{**d, "pct": round(d["views"] * 100 / top)} for d in cf["daily"]]
     conn.close()
 
     return render_template(
         "stats.html",
+        cf=cf,
+        cf_configured=cloudflare_configured(),
         total_visits=total_visits,
         top_images=top_images,
         per_category=per_category,

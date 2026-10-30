@@ -41,7 +41,7 @@
 {% if images %}
 <div class="grid">
     {% for image in images %}
-    <a class="card" data-full="{{ media_url('uploads', image['filename']) }}" href="{{ image_url(image, cat=category.slug, q=query) }}">
+    <a class="card" data-full="{{ media_url('uploads', image['filename']) }}" href="{{ image_url(image, cat=category.slug, q=(query or None)) }}">
         <img src="{{ thumb_url(image['thumbnail'], image['filename']) }}" alt="{{ image_alt(image) }}" loading="lazy">
         <div class="card-body">
             <div class="card-title">{{ image['title'] }}</div>
@@ -63,11 +63,11 @@
 {% if total_pages > 1 %}
 <div class="pagination">
     {% if page > 1 %}
-        <a href="{{ url_for('category_view', slug=category.slug, q=query, page=page-1) }}">Previous</a>
+        <a href="{{ url_for('category_view', slug=category.slug, q=(query or None), page=page-1) }}">Previous</a>
     {% endif %}
     <span>Page {{ page }} of {{ total_pages }}</span>
     {% if page < total_pages %}
-        <a href="{{ url_for('category_view', slug=category.slug, q=query, page=page+1) }}">Next</a>
+        <a href="{{ url_for('category_view', slug=category.slug, q=(query or None), page=page+1) }}">Next</a>
     {% endif %}
 </div>
 {% endif %}

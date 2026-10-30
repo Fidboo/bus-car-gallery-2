@@ -584,11 +584,12 @@ def test_back_link_returns_to_the_list_page_the_photo_is_on(appmod):
         return re.search(r'id="backLink" href="([^"]+)"', html).group(1).replace("&amp;", "&")
 
     # newest first: id 60 is position 1. Page 1 holds positions 1..per_page.
-    assert back(60) == "/category/bus?q="                       # first photo -> page 1 (no page param)
-    assert back(60 - per_page + 1) == "/category/bus?q="        # last photo on page 1
-    assert back(60 - per_page) == "/category/bus?q=&page=2"     # first photo on page 2
-    assert back(60 - 2 * per_page) == "/category/bus?q=&page=3"
-    assert back(1) == "/category/bus?q=&page=3"                 # oldest photo (position 60) -> page 3
+    # (no empty "q=" in the address: robots.txt keeps search engines away from searches)
+    assert back(60) == "/category/bus"                          # first photo -> page 1 (no page param)
+    assert back(60 - per_page + 1) == "/category/bus"           # last photo on page 1
+    assert back(60 - per_page) == "/category/bus?page=2"        # first photo on page 2
+    assert back(60 - 2 * per_page) == "/category/bus?page=3"
+    assert back(1) == "/category/bus?page=3"                    # oldest photo (position 60) -> page 3
 
     # the same holds inside a search: position counts only the matching photos
     html = c.get("/category/bus?q=volvo&page=2").get_data(as_text=True)

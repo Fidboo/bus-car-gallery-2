@@ -541,9 +541,18 @@ code{background:var(--tile);padding:1px 6px;border-radius:4px}
 
 /* stats: Cloudflare visitor numbers */
 .stat-sub{color:var(--muted);font-size:.85rem;margin-top:4px}
-.cf-days{display:flex;align-items:flex-end;gap:3px;height:140px;margin:10px 0 30px;padding-bottom:18px;position:relative}
-.cf-day{flex:1;height:100%;display:flex;flex-direction:column;justify-content:flex-end;align-items:center;position:relative;min-width:0}
-.cf-bar{display:block;width:100%;background:var(--accent);border-radius:3px 3px 0 0;min-height:2px}
-.cf-date{position:absolute;bottom:-18px;font-size:.7rem;color:var(--muted)}
+.cf-range{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin:0 0 24px}
+.cf-range-label{color:var(--muted);font-size:.9rem;margin-right:2px}
+.cf-range-custom{display:flex;align-items:center;gap:6px;margin-left:8px;flex-wrap:wrap}
+.cf-range-custom input{padding:6px 8px;border:1px solid var(--line);border-radius:8px;font:inherit;font-size:.9rem;background:#fff}
+.cf-range-custom button{padding:7px 14px}
+.cf-chart{display:flex;gap:8px;margin:10px 0 34px}
+.cf-axis{display:flex;flex-direction:column;justify-content:space-between;height:160px;font-size:.72rem;color:var(--muted);text-align:right;min-width:28px}
+.cf-days{flex:1;display:flex;align-items:flex-end;gap:2px;height:160px;border-left:1px solid var(--line);border-bottom:1px solid var(--line);padding:0 4px;min-width:0}
+.cf-day{flex:1 1 0;max-width:42px;height:100%;display:flex;flex-direction:column;justify-content:flex-end;align-items:center;position:relative;min-width:0}
+.cf-bar{display:block;width:100%;background:var(--accent);border-radius:3px 3px 0 0}
+.cf-bar.cf-zero{height:1px!important;background:var(--line)}
+.cf-day:hover .cf-bar{background:var(--accent-dark)}
+.cf-date{position:absolute;bottom:-20px;font-size:.68rem;color:var(--muted);white-space:nowrap}
 .cf-columns{display:grid;grid-template-columns:1fr 1fr;gap:30px}
-@media (max-width:760px){.cf-columns{grid-template-columns:1fr}.cf-date{display:none}}
+@media (max-width:760px){.cf-columns{grid-template-columns:1fr}.cf-range-custom{margin-left:0}}

@@ -11,7 +11,7 @@ def _fake_payload():
     def total(v, n):
         return [{"count": v, "sum": {"visits": n}}]
     return {"data": {"viewer": {"accounts": [{
-        "day": total(40, 12), "week": total(300, 90), "month": total(1200, 350),
+        "day": total(40, 12), "week": total(300, 90), "month": total(1200, 350), "period": total(1200, 350),
         "daily": [{"count": 10, "sum": {"visits": 4}, "dimensions": {"date": "2026-10-29"}},
                   {"count": 30, "sum": {"visits": 8}, "dimensions": {"date": "2026-10-30"}}],
         "pages": [{"count": 99, "dimensions": {"requestPath": "/image/1-volvo-b10m"}},
@@ -37,7 +37,7 @@ def test_stats_page_shows_cloudflare_numbers(appmod, monkeypatch):
     conn.close()
     monkeypatch.setattr(appmod, "CF_API_TOKEN", "tok")
     monkeypatch.setattr(appmod, "CF_ACCOUNT_ID", "acc123")
-    appmod._cf_cache.update(until=0, data=None)
+    appmod._cf_cache.clear()
     sent = {}
 
     def fake_urlopen(req, timeout=None):
@@ -58,13 +58,13 @@ def test_stats_page_shows_cloudflare_numbers(appmod, monkeypatch):
     sent.clear()
     c.get("/stats")
     assert sent == {}
-    appmod._cf_cache.update(until=0, data=None)
+    appmod._cf_cache.clear()
 
 
 def test_stats_page_without_or_with_broken_cloudflare(appmod, monkeypatch):
     c = appmod.app.test_client()
     login(c)
-    appmod._cf_cache.update(until=0, data=None)
+    appmod._cf_cache.clear()
     assert "not set up yet" in c.get("/stats").get_data(as_text=True)
     monkeypatch.setattr(appmod, "CF_API_TOKEN", "bad")
     monkeypatch.setattr(appmod, "CF_ACCOUNT_ID", "acc")
@@ -73,7 +73,7 @@ def test_stats_page_without_or_with_broken_cloudflare(appmod, monkeypatch):
     html = c.get("/stats").get_data(as_text=True)
     assert "Could not fetch" in html and "not authorized" in html
     assert "Total page views" in html               # own counter still shown
-    appmod._cf_cache.update(until=0, data=None)
+    appmod._cf_cache.clear()
 
 
 def test_links_and_sitemap_use_https_and_no_empty_q(appmod, monkeypatch):
@@ -89,3 +89,30 @@ def test_links_and_sitemap_use_https_and_no_empty_q(appmod, monkeypatch):
     assert "<loc>https://" in c.get("/sitemap-images-1.xml").get_data(as_text=True)
     robots = c.get("/robots.txt").get_data(as_text=True)
     assert "Sitemap: https://" in robots and "Allow: /*?q=&" in robots
+
+
+def test_period_choice_and_every_day_in_chart(appmod, monkeypatch):
+    monkeypatch.setattr(appmod, "CF_API_TOKEN", "tok")
+    monkeypatch.setattr(appmod, "CF_ACCOUNT_ID", "acc")
+    appmod._cf_cache.clear()
+    queries = []
+
+    def fake_urlopen(req, timeout=None):
+        queries.append(json.loads(req.data)["query"])
+        p = _fake_payload()
+        p["data"]["viewer"]["accounts"][0]["period"] = [{"count": 77, "sum": {"visits": 33}}]
+        p["data"]["viewer"]["accounts"][0]["daily"] = [{"count": 5, "sum": {"visits": 2}, "dimensions": {"date": "2026-10-03"}}]
+        return _Resp(json.dumps(p).encode())
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+    c = appmod.app.test_client()
+    login(c)
+    html = c.get("/stats?from=2026-10-01&to=2026-10-07").get_data(as_text=True)
+    assert 'datetime_geq: "2026-10-01T00:00:00Z"' in queries[-1]
+    assert 'datetime_leq: "2026-10-07T23:59:59Z"' in queries[-1]
+    assert html.count('class="cf-day"') == 7                    # all 7 days, also the empty ones
+    assert "77 page views, 33 visits" in html
+    html = c.get("/stats?days=7").get_data(as_text=True)
+    assert "last 7 days" in html and html.count('class="cf-day"') in (7, 8)
+    assert "last 30 days" in c.get("/stats?days=12345").get_data(as_text=True)   # unknown -> 30
+    c.get("/stats?from=nonsense")                                 # bad dates don't crash
+    appmod._cf_cache.clear()

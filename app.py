@@ -1871,52 +1871,95 @@ CF_ACCOUNT_ID = os.environ.get("CF_ACCOUNT_ID", "").strip()
 CF_SITE_TAG = os.environ.get("CF_SITE_TAG", "").strip()
 CF_HOST = os.environ.get("CF_HOST", urlparse(SITE_URL).hostname or "b12ble.com").strip()
 CF_CACHE_SECONDS = 600
-_cf_cache = {"until": 0, "data": None}
+_cf_cache = {}          # (start, end) -> (valid until, data)
 
-def _cf_query(account, site_filter, d1, d7, d30):
+# Periods offered on the stats page (days back from now).
+CF_RANGES = [(1, "24 hours"), (7, "7 days"), (30, "30 days"), (90, "90 days"), (180, "6 months")]
+CF_MAX_DAYS = 186
+
+
+def _cf_query(account, site_filter, start, end, d1, d7, d30):
     """GraphQL text. Values are inlined (json-quoted) so no Cloudflare type
-    names are needed."""
+    names are needed. The three boxes are always 24h/7d/30d; the chart and
+    lists use the chosen period start..end."""
     import json
     q = json.dumps
 
-    def f(since):
-        return "{AND: [{datetime_geq: %s}, {OR: [%s]}]}" % (q(since), site_filter)
+    def f(since, until=None):
+        parts = ["{datetime_geq: %s}" % q(since)]
+        if until:
+            parts.append("{datetime_leq: %s}" % q(until))
+        return "{AND: [%s, {OR: [%s]}]}" % (", ".join(parts), site_filter)
+    p = f(start, end)
     return """{ viewer { accounts(filter: {accountTag: %s}) {
       day: rumPageloadEventsAdaptiveGroups(filter: %s, limit: 1) { count sum { visits } }
       week: rumPageloadEventsAdaptiveGroups(filter: %s, limit: 1) { count sum { visits } }
       month: rumPageloadEventsAdaptiveGroups(filter: %s, limit: 1) { count sum { visits } }
-      daily: rumPageloadEventsAdaptiveGroups(filter: %s, limit: 31, orderBy: [date_ASC]) { count sum { visits } dimensions { date } }
+      period: rumPageloadEventsAdaptiveGroups(filter: %s, limit: 1) { count sum { visits } }
+      daily: rumPageloadEventsAdaptiveGroups(filter: %s, limit: 200, orderBy: [date_ASC]) { count sum { visits } dimensions { date } }
       pages: rumPageloadEventsAdaptiveGroups(filter: %s, limit: 25, orderBy: [count_DESC]) { count dimensions { requestPath } }
       countries: rumPageloadEventsAdaptiveGroups(filter: %s, limit: 10, orderBy: [count_DESC]) { count sum { visits } dimensions { countryName } }
       referers: rumPageloadEventsAdaptiveGroups(filter: %s, limit: 10, orderBy: [count_DESC]) { count dimensions { refererHost } }
-    } } }""" % (q(account), f(d1), f(d7), f(d30), f(d30), f(d30), f(d30), f(d30))
+    } } }""" % (q(account), f(d1), f(d7), f(d30), p, p, p, p, p)
 
 
 def cloudflare_configured():
     return bool(CF_API_TOKEN and CF_ACCOUNT_ID)
 
 
-def _cf_iso(seconds_ago):
-    return datetime.fromtimestamp(time.time() - seconds_ago, timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+def _cf_iso(dt):
+    return dt.strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-def fetch_cloudflare_stats():
+def stats_period(args):
+    """The period chosen on the stats page: ?days=N, or ?from=YYYY-MM-DD&to=YYYY-MM-DD.
+    Returns (start, end, days_choice or None, from_text, to_text, label)."""
+    from datetime import timedelta
+    now = datetime.now(timezone.utc).replace(second=0, microsecond=0)
+    f_txt, t_txt = args.get("from", "").strip(), args.get("to", "").strip()
+    if f_txt or t_txt:
+        try:
+            start = datetime.strptime(f_txt, "%Y-%m-%d").replace(tzinfo=timezone.utc) if f_txt else now - timedelta(days=30)
+            end = (datetime.strptime(t_txt, "%Y-%m-%d").replace(tzinfo=timezone.utc) + timedelta(days=1, seconds=-1)) if t_txt else now
+            end = min(end, now)
+            if start > end:
+                start, end = end - timedelta(days=1), end
+            start = max(start, end - timedelta(days=CF_MAX_DAYS))
+            label = f"{start:%d %b %Y} - {end:%d %b %Y}"
+            return start, end, None, start.strftime("%Y-%m-%d"), end.strftime("%Y-%m-%d"), label
+        except ValueError:
+            pass
+    days = args.get("days", 30, type=int)
+    if days not in [d for d, _ in CF_RANGES]:
+        days = 30
+    start = now - timedelta(days=days)
+    label = "last " + dict(CF_RANGES)[days]
+    return start, now, days, start.strftime("%Y-%m-%d"), now.strftime("%Y-%m-%d"), label
+
+
+def fetch_cloudflare_stats(start=None, end=None):
     """{"ok": True, ...numbers...} or {"ok": False, "error": "..."}; never raises."""
+    from datetime import timedelta
     if not cloudflare_configured():
         return {"ok": False, "error": "not configured"}
-    if _cf_cache["data"] is not None and _cf_cache["until"] > time.time():
-        return _cf_cache["data"]
+    now = datetime.now(timezone.utc).replace(second=0, microsecond=0)
+    end = end or now
+    start = start or end - timedelta(days=30)
+    key = (start.strftime("%Y%m%d%H"), end.strftime("%Y%m%d%H"))
+    hit = _cf_cache.get(key)
+    if hit and hit[0] > time.time():
+        return hit[1]
     import json
     import urllib.request
     if CF_SITE_TAG:
         site = "{siteTag: %s}" % json.dumps(CF_SITE_TAG)
     else:
         site = "{requestHost: %s}, {requestHost: %s}" % (json.dumps(CF_HOST), json.dumps("www." + CF_HOST))
-    body = json.dumps({"query": _cf_query(CF_ACCOUNT_ID, site, _cf_iso(86400),
-                                          _cf_iso(7 * 86400), _cf_iso(30 * 86400))}).encode()
+    query = _cf_query(CF_ACCOUNT_ID, site, _cf_iso(start), _cf_iso(end), _cf_iso(now - timedelta(days=1)),
+                      _cf_iso(now - timedelta(days=7)), _cf_iso(now - timedelta(days=30)))
     req = urllib.request.Request(
-        "https://api.cloudflare.com/client/v4/graphql", data=body, method="POST",
-        headers={"Authorization": f"Bearer {CF_API_TOKEN}", "Content-Type": "application/json"})
+        "https://api.cloudflare.com/client/v4/graphql", data=json.dumps({"query": query}).encode(),
+        method="POST", headers={"Authorization": f"Bearer {CF_API_TOKEN}", "Content-Type": "application/json"})
     try:
         with urllib.request.urlopen(req, timeout=8) as resp:
             payload = json.loads(resp.read().decode())
@@ -1929,9 +1972,15 @@ def fetch_cloudflare_stats():
             return {"views": row.get("count", 0), "visits": (row.get("sum") or {}).get("visits", 0)}
 
         data = {"ok": True, "day": total(acc["day"]), "week": total(acc["week"]),
-                "month": total(acc["month"])}
-        data["daily"] = [{"date": r["dimensions"]["date"], "views": r["count"],
-                          "visits": r["sum"]["visits"]} for r in acc["daily"]]
+                "month": total(acc["month"]), "period": total(acc["period"])}
+        by_date = {r["dimensions"]["date"]: r for r in acc["daily"]}
+        daily, d = [], start.date()
+        while d <= end.date():                      # every day, also the empty ones
+            r = by_date.get(d.isoformat())
+            daily.append({"date": d.isoformat(), "views": r["count"] if r else 0,
+                          "visits": r["sum"]["visits"] if r else 0})
+            d += timedelta(days=1)
+        data["daily"] = daily
         data["countries"] = [{"name": r["dimensions"]["countryName"] or "?", "views": r["count"],
                               "visits": r["sum"]["visits"]} for r in acc["countries"]]
         data["referers"] = [{"host": r["dimensions"]["refererHost"] or "(direct / none)", "views": r["count"]}
@@ -1940,9 +1989,11 @@ def fetch_cloudflare_stats():
     except Exception as exc:  # network, token, Cloudflare changes ...
         app.logger.warning("Cloudflare stats failed: %s", exc)
         data = {"ok": False, "error": str(exc)[:300]}
-        _cf_cache.update(until=time.time() + 60, data=data)       # retry after a minute
+        _cf_cache[key] = (time.time() + 60, data)          # retry after a minute
         return data
-    _cf_cache.update(until=time.time() + CF_CACHE_SECONDS, data=data)
+    if len(_cf_cache) > 30:
+        _cf_cache.clear()
+    _cf_cache[key] = (time.time() + CF_CACHE_SECONDS, data)
     return data
 
 
@@ -1990,17 +2041,20 @@ def stats():
 
     total_images = conn.execute("SELECT COUNT(*) FROM images").fetchone()[0]
     total_comments = conn.execute("SELECT COUNT(*) FROM comments").fetchone()[0]
-    cf = fetch_cloudflare_stats()
+    start, end, days, from_txt, to_txt, period_label = stats_period(request.args)
+    cf = fetch_cloudflare_stats(start, end)
     if cf.get("ok"):
         cf = {**cf, "pages": label_paths(conn, cf["pages"])}
         top = max([d["views"] for d in cf["daily"]] or [1]) or 1
         cf["daily"] = [{**d, "pct": round(d["views"] * 100 / top)} for d in cf["daily"]]
+        cf["top"] = top
     conn.close()
 
     return render_template(
         "stats.html",
         cf=cf,
         cf_configured=cloudflare_configured(),
+        cf_ranges=CF_RANGES, cf_days=days, cf_from=from_txt, cf_to=to_txt, period_label=period_label,
         total_visits=total_visits,
         top_images=top_images,
         per_category=per_category,

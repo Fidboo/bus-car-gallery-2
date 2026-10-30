@@ -16,21 +16,36 @@
     {% endfor %}
 </div>
 
-{% if cf.daily %}
-<h3>Page views per day (last 30 days)</h3>
-<div class="cf-days">
-    {% for d in cf.daily %}
-    <div class="cf-day" title="{{ d.date }}: {{ d.views }} page views, {{ d.visits }} visits">
-        <span class="cf-bar" style="height: {{ [d.pct, 2]|max }}%"></span>
-        <span class="cf-date">{{ d.date[8:10] }}</span>
-    </div>
+<form class="cf-range" method="get" action="{{ url_for('stats') }}">
+    <span class="cf-range-label">Show:</span>
+    {% for d, label in cf_ranges %}
+        <a class="chip {{ 'chip-active' if cf_days == d }}" href="{{ url_for('stats', days=d) }}">{{ label }}</a>
     {% endfor %}
+    <span class="cf-range-custom">
+        <input type="date" name="from" value="{{ cf_from }}" aria-label="From">
+        <span>to</span>
+        <input type="date" name="to" value="{{ cf_to }}" aria-label="To">
+        <button type="submit">Show</button>
+    </span>
+</form>
+
+<h3>Page views per day <span class="hint">({{ period_label }}: {{ cf.period.views }} page views, {{ cf.period.visits }} visits)</span></h3>
+<div class="cf-chart">
+    <div class="cf-axis"><span>{{ cf.top }}</span><span>{{ (cf.top / 2)|round|int }}</span><span>0</span></div>
+    <div class="cf-days">
+        {% set step = ((cf.daily|length) / 10)|round(0, 'ceil')|int %}
+        {% for d in cf.daily %}
+        <div class="cf-day" title="{{ d.date }}: {{ d.views }} page views, {{ d.visits }} visits">
+            <span class="cf-bar {{ 'cf-zero' if not d.views }}" style="height: {{ d.pct }}%"></span>
+            {% if loop.index0 % step == 0 or loop.last %}<span class="cf-date">{{ d.date[8:10] }}/{{ d.date[5:7] }}</span>{% endif %}
+        </div>
+        {% endfor %}
+    </div>
 </div>
-{% endif %}
 
 <div class="cf-columns">
     <div>
-        <h3>Most viewed pages (30 days)</h3>
+        <h3>Most viewed pages ({{ period_label }})</h3>
         <table class="stats-table">
             <thead><tr><th>Page</th><th>Views</th></tr></thead>
             <tbody>
@@ -43,14 +58,14 @@
         </table>
     </div>
     <div>
-        <h3>Countries (30 days)</h3>
+        <h3>Countries ({{ period_label }})</h3>
         <table class="stats-table">
             <thead><tr><th>Country</th><th>Visits</th></tr></thead>
             <tbody>
             {% for c in cf.countries %}<tr><td>{{ c.name }}</td><td>{{ c.visits }}</td></tr>{% endfor %}
             </tbody>
         </table>
-        <h3>Came from (30 days)</h3>
+        <h3>Came from ({{ period_label }})</h3>
         <table class="stats-table">
             <thead><tr><th>Website</th><th>Page views</th></tr></thead>
             <tbody>

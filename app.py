@@ -421,7 +421,10 @@ def security_headers(resp):
     resp.headers.setdefault(
         "Content-Security-Policy",
         f"default-src 'self'; img-src {img_src}; "
-        "style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; "
+        "style-src 'self' 'unsafe-inline'; "
+        # Cloudflare Web Analytics: its script and where it reports to.
+        "script-src 'self' 'unsafe-inline' https://static.cloudflareinsights.com; "
+        "connect-src 'self' https://cloudflareinsights.com; "
         "frame-ancestors 'none'; base-uri 'self'; form-action 'self'",
     )
     # Pages contain per-visitor tokens - never let a shared cache (e.g. a CDN) keep them.

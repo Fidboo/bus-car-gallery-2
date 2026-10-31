@@ -428,7 +428,7 @@ def hit(client, path, headers=None):
     import json
     h = {"Accept-Language": "da-DK,da;q=0.9"}
     h.update(headers or {})
-    return client.post("/api/hit", data=json.dumps({"p": path, "h": 1}), headers=h, content_type="text/plain")
+    return client.post("/api/hit", data=json.dumps({"p": path, "h": 1, "t": 15, "tz": "Europe/Copenhagen"}), headers=h, content_type="text/plain")
 
 
 def test_views_count_once_per_visitor_and_skip_bots_and_owner(appmod):

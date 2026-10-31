@@ -1,4 +1,5 @@
-"""Set every photo's view count and the site-wide page-view total to 0.
+"""Set every photo's view count, the site-wide page-view total and the
+"Real visitors" numbers on the stats page to 0.
 
 Run on the server (it first saves a copy of the database next to it):
 
@@ -29,5 +30,8 @@ conn.backup(dst)
 dst.close()
 conn.execute("UPDATE images SET views = 0")
 conn.execute("UPDATE site_stats SET value = 0 WHERE key = 'total_visits'")
+for table in ("daily_views", "daily_visitors", "daily_refs", "hit_log"):   # "Real visitors" on the stats page
+    if conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (table,)).fetchone():
+        conn.execute(f"DELETE FROM {table}")
 conn.commit()
 print(f"Done - all view counts are 0. Copy of the old database: {backup}")

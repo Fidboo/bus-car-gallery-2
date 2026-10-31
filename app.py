@@ -215,6 +215,18 @@ def init_db():
             PRIMARY KEY (day, visitor)
         )
     """)
+    # Every counting request with the verdict, kept 30 days, so it can be
+    # seen what was filtered out as bots and why. No IP address is stored.
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS hit_log (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            day TEXT NOT NULL, path TEXT NOT NULL, country TEXT NOT NULL,
+            tz TEXT NOT NULL DEFAULT '', lang TEXT NOT NULL DEFAULT '',
+            seconds INTEGER NOT NULL DEFAULT 0, ua TEXT NOT NULL DEFAULT '',
+            counted INTEGER NOT NULL, reason TEXT NOT NULL DEFAULT ''
+        )
+    """)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_hit_log_day ON hit_log(day, counted)")
     conn.execute("""
         CREATE TABLE IF NOT EXISTS daily_refs (
             day TEXT NOT NULL, host TEXT NOT NULL, views INTEGER NOT NULL DEFAULT 0,
@@ -984,47 +996,64 @@ HIT_PATH = re.compile(
 
 @app.route("/api/hit", methods=["POST"])
 def api_hit():
-    """Called by the page (base.html) once a PERSON has shown up: the page is
-    visible and there was a real scroll, mouse move, touch or key press, and
-    the browser doesn't look automated. Everything here is checked again on
-    the server, then counted:
+    """Called by the page (base.html) when a PERSON has used it: real scroll,
+    mouse, touch or key AND at least ENGAGED_SECONDS with the page visible,
+    in a browser that doesn't look automated. The server checks again
+    (browser name, language, time zone against the country), then counts:
       - per-photo views and the old total (once per visitor per 24 hours)
       - "real visitors" per day: page views, unique visitors, country, and the
-        website the visitor came from."""
+        website the visitor came from.
+    Every request is written to hit_log with the verdict (kept 30 days)."""
     import json
     raw = (request.get_data(as_text=True) or "")[:1000]
     try:
         info = json.loads(raw) if raw.startswith("{") else {"p": raw}
     except ValueError:
         return "", 204
+    if not isinstance(info, dict):
+        return "", 204
     path = str(info.get("p", ""))[:300].split("?")[0].split("#")[0]
     m = HIT_PATH.match(path)
-    if not m or not is_countable_visitor() or not looks_human_request():
+    if not m or session.get("logged_in"):
         return "", 204
-    if not info.get("h"):          # old pages (cached before this change) don't prove a human
-        return "", 204
-    image_id = m.group("image")
     day = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     country = (request.headers.get("CF-IPCountry", "") or "").strip().upper()[:2]
     if not re.fullmatch(r"[A-Z]{2}", country) or country in ("XX", "T1"):
         country = "??"
+    tz = str(info.get("tz", ""))[:40]
+    try:
+        seconds = int(info.get("t", 0) or 0)
+    except (TypeError, ValueError):
+        seconds = 0
+
+    reason = bot_reason(info, tz, country, seconds)
+    image_id = m.group("image")
     try:
         conn = get_db()
-        if image_id and first_view(f"i{image_id}"):
-            conn.execute("UPDATE images SET views = views + 1 WHERE id = ?", (int(image_id),))
-        if first_view("p" + format(zlib.crc32(path.encode("utf-8")), "x")):
-            conn.execute("UPDATE site_stats SET value = value + 1 WHERE key = 'total_visits'")
-            conn.execute(
-                "INSERT INTO daily_views (day, path, country, views) VALUES (?, ?, ?, 1) "
-                "ON CONFLICT (day, path, country) DO UPDATE SET views = views + 1",
-                (day, path, country))
-            conn.execute("INSERT OR IGNORE INTO daily_visitors (day, visitor, country) VALUES (?, ?, ?)",
-                         (day, visitor_hash(day), country))
-            ref = str(info.get("r", ""))[:100].lower().strip()
-            if ref and re.fullmatch(r"[a-z0-9.-]+", ref) and ref.removeprefix("www.") != (CF_HOST or "").removeprefix("www."):
+        conn.execute(
+            "INSERT INTO hit_log (day, path, country, tz, lang, seconds, ua, counted, reason) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (day, path, country, tz, str(info.get("lang", ""))[:20], max(0, min(seconds, 99999)),
+             request.headers.get("User-Agent", "")[:200], 0 if reason else 1, reason))
+        if secrets.randbelow(200) == 0:
+            conn.execute("DELETE FROM hit_log WHERE day < date('now', '-30 days')")
+        if not reason:
+            if image_id and first_view(f"i{image_id}"):
+                conn.execute("UPDATE images SET views = views + 1 WHERE id = ?", (int(image_id),))
+            if first_view("p" + format(zlib.crc32(path.encode("utf-8")), "x")):
+                conn.execute("UPDATE site_stats SET value = value + 1 WHERE key = 'total_visits'")
                 conn.execute(
-                    "INSERT INTO daily_refs (day, host, views) VALUES (?, ?, 1) "
-                    "ON CONFLICT (day, host) DO UPDATE SET views = views + 1", (day, ref))
+                    "INSERT INTO daily_views (day, path, country, views) VALUES (?, ?, ?, 1) "
+                    "ON CONFLICT (day, path, country) DO UPDATE SET views = views + 1",
+                    (day, path, country))
+                conn.execute("INSERT OR IGNORE INTO daily_visitors (day, visitor, country) VALUES (?, ?, ?)",
+                             (day, visitor_hash(day), country))
+                ref = str(info.get("r", ""))[:100].lower().strip()
+                if ref and re.fullmatch(r"[a-z0-9.-]+", ref) and \
+                        ref.removeprefix("www.") != (CF_HOST or "").removeprefix("www."):
+                    conn.execute(
+                        "INSERT INTO daily_refs (day, host, views) VALUES (?, ?, 1) "
+                        "ON CONFLICT (day, host) DO UPDATE SET views = views + 1", (day, ref))
         conn.commit()
         conn.close()
     except Exception:
@@ -1032,11 +1061,45 @@ def api_hit():
     return "", 204
 
 
-def looks_human_request():
-    """Server-side checks on the counting request: real browsers always send
-    a language and a normal-length browser name."""
+ENGAGED_SECONDS = 10
+
+# Which countries fit a time zone's region ("Europe/...", "Asia/..." ...).
+# Generous on purpose (border countries are in several lists); only a clear
+# mismatch - e.g. an IP in Vietnam with a browser set to America/New_York,
+# typical for bots renting home internet connections - is filtered out.
+_TZ_REGIONS = {
+    "Europe": "AD AL AT AX BA BE BG BY CH CY CZ DE DK EE ES FI FO FR GB GG GI GR HR HU IE IM IS IT JE "
+              "LI LT LU LV MC MD ME MK MT NL NO PL PT RO RS RU SE SI SJ SK SM UA VA XK TR GE AM AZ KZ",
+    "America": "AG AI AR AW BB BL BM BO BQ BR BS BZ CA CL CO CR CU CW DM DO EC FK GD GF GL GP GT GY HN "
+               "HT JM KN KY LC MF MQ MS MX NI PA PE PM PR PY SR SV SX TC TT US UY VC VE VG VI",
+    "Asia": "AE AF AM AZ BD BH BN BT CN CY GE HK ID IL IN IQ IR JO JP KG KH KP KR KW KZ LA LB LK MM MN "
+            "MO MV MY NP OM PH PK PS QA RU SA SG SY TH TJ TL TM TR TW UZ VN YE EG",
+    "Africa": "AO BF BI BJ BW CD CF CG CI CM CV DJ DZ EG EH ER ET GA GH GM GN GQ GW KE KM LR LS LY MA "
+              "MG ML MR MU MW MZ NA NE NG RE RW SC SD SL SN SO SS ST SZ TD TG TN TZ UG YT ZA ZM ZW ES",
+    "Australia": "AU", "Pacific": "AU NZ FJ PG NC PF WS TO VU SB KI FM MH PW NR TV CK NU AS GU MP US CL EC",
+}
+_TZ_REGIONS = {k: set(v.split()) for k, v in _TZ_REGIONS.items()}
+_KNOWN_COUNTRIES = set().union(*_TZ_REGIONS.values())
+
+
+def bot_reason(info, tz, country, seconds):
+    """'' when this looks like a person, otherwise a short reason."""
     ua = request.headers.get("User-Agent", "")
-    return len(ua) >= 20 and "mozilla/" in ua.lower() and bool(request.headers.get("Accept-Language"))
+    low = ua.lower()
+    if not info.get("h"):
+        return "no human activity"          # old pages cached before this change
+    if not ua or any(word in low for word in BOT_WORDS):
+        return "bot browser"
+    if len(ua) < 20 or "mozilla/" not in low or not request.headers.get("Accept-Language"):
+        return "not a normal browser"
+    if seconds < ENGAGED_SECONDS:
+        return f"left within {ENGAGED_SECONDS} s"
+    if not tz or tz in ("UTC", "GMT") or tz.startswith("Etc/"):
+        return "server time zone"
+    region = tz.split("/")[0]
+    if country in _KNOWN_COUNTRIES and region in _TZ_REGIONS and country not in _TZ_REGIONS[region]:
+        return "time zone doesn't match country"
+    return ""
 
 
 def visitor_hash(day):
@@ -2129,6 +2192,14 @@ def real_visitor_stats(conn, start, end):
         "SELECT host, SUM(views) AS v FROM daily_refs WHERE day BETWEEN ? AND ? "
         "GROUP BY host ORDER BY v DESC LIMIT 10", (d0, d1))]
     out["referers"] = refs
+    # What the bot filter threw away in the period, and why (hit_log keeps 30 days).
+    out["filtered"] = [{"reason": r[0], "n": r[1]} for r in conn.execute(
+        "SELECT reason, COUNT(*) AS n FROM hit_log WHERE counted = 0 AND day BETWEEN ? AND ? "
+        "GROUP BY reason ORDER BY n DESC", (d0, d1))]
+    out["filtered_total"] = sum(f["n"] for f in out["filtered"])
+    out["filtered_countries"] = [{"name": country_label(r[0]), "n": r[1]} for r in conn.execute(
+        "SELECT country, COUNT(*) AS n FROM hit_log WHERE counted = 0 AND day BETWEEN ? AND ? "
+        "GROUP BY country ORDER BY n DESC LIMIT 8", (d0, d1))]
     out["ok"] = True
     return out
 

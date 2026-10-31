@@ -87,6 +87,26 @@
 {{ chart(real, 'Visitors') }}
 {{ lists(real, 'Visitors') }}
 
+<details class="stats-compare">
+    <summary><h3>Filtered out as bots: {{ real.filtered_total }} page views ({{ period_label }})</h3></summary>
+    <p class="hint">Requests that were NOT counted above, and why. Kept for 30 days.</p>
+    <div class="cf-columns">
+        <table class="stats-table">
+            <thead><tr><th>Reason</th><th>Page views</th></tr></thead>
+            <tbody>
+            {% for f in real.filtered %}<tr><td>{{ f.reason }}</td><td>{{ f.n }}</td></tr>
+            {% else %}<tr><td colspan="2" class="hint">Nothing filtered out.</td></tr>{% endfor %}
+            </tbody>
+        </table>
+        <table class="stats-table">
+            <thead><tr><th>Country</th><th>Page views</th></tr></thead>
+            <tbody>
+            {% for c in real.filtered_countries %}<tr><td>{{ c.name }}</td><td>{{ c.n }}</td></tr>{% endfor %}
+            </tbody>
+        </table>
+    </div>
+</details>
+
 <details class="stats-compare" {{ 'open' if not (cf and cf.ok) and cf_configured }}>
     <summary><h2>For comparison: Cloudflare Web Analytics</h2></summary>
     <p class="hint">Cloudflare counts every browser that runs its script, including bots that use a real browser, so these numbers are usually higher.</p>

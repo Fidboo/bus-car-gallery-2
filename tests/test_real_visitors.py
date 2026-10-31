@@ -10,7 +10,7 @@ BROWSER = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120 S
 
 
 def send(client, path, headers=None, **extra):
-    body = {"p": path, "h": 1, **extra}
+    body = {"p": path, "h": 1, "t": 15, "tz": "Europe/Copenhagen", **extra}
     return client.post("/api/hit", data=json.dumps(body), headers=headers or BROWSER, content_type="text/plain")
 
 
@@ -38,6 +38,9 @@ def test_only_people_are_counted(appmod):
     send(c, page, headers={**BROWSER, "User-Agent": "Mozilla/5.0 HeadlessChrome/120"})
     send(c, page, headers={**BROWSER, "User-Agent": "python-requests/2.31"})
     send(c, "/login")
+    send(c, page, t=4)                                                                  # left after 4 s
+    send(c, page, tz="UTC")                                                             # server clock
+    send(c, page, headers={**BROWSER, "CF-IPCountry": "VN"}, tz="America/New_York")     # rented IP abroad
     c.post("/api/hit", data="{broken json", headers=BROWSER, content_type="text/plain")
 
     assert sorted(rows(appmod, "SELECT path, country, views FROM daily_views")) == [
@@ -72,3 +75,21 @@ def test_stats_page_shows_real_visitors(appmod):
     assert '<div class="stat-number">3</div>' in real   # 3 visitors today
     assert real.count('class="cf-day"') in (7, 8)
     assert "Nobody came from another website" in real
+
+
+def test_filtered_requests_are_logged_with_reason_and_shown(appmod):
+    page = "/albums"
+    c = appmod.app.test_client()
+    send(c, page, t=3)
+    send(c, page, tz="Etc/UTC")
+    send(c, page, headers={**BROWSER, "CF-IPCountry": "SG"}, tz="America/Chicago")
+    send(c, page, headers={**BROWSER, "CF-IPCountry": "VN"}, tz="Asia/Ho_Chi_Minh")    # a real Vietnamese visitor
+    send(appmod.app.test_client(), page, headers={**BROWSER, "CF-IPCountry": "SE"}, tz="Europe/Stockholm")
+    got = sorted(rows(appmod, "SELECT reason, counted FROM hit_log"))
+    assert got == [("", 1), ("", 1), ("left within 10 s", 0), ("server time zone", 0),
+                   ("time zone doesn't match country", 0)]
+    owner = appmod.app.test_client()
+    login(owner)
+    html = owner.get("/stats").get_data(as_text=True)
+    assert "Filtered out as bots: 3 page views" in html
+    assert "time zone doesn&#39;t match country" in html and "Singapore" in html

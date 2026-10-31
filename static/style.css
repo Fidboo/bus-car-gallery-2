@@ -556,3 +556,10 @@ code{background:var(--tile);padding:1px 6px;border-radius:4px}
 .cf-date{position:absolute;bottom:-20px;font-size:.68rem;color:var(--muted);white-space:nowrap}
 .cf-columns{display:grid;grid-template-columns:1fr 1fr;gap:30px}
 @media (max-width:760px){.cf-columns{grid-template-columns:1fr}.cf-range-custom{margin-left:0}}
+
+.stats-compare{margin:10px 0 30px;border-top:1px solid var(--line);padding-top:6px}
+.stats-compare summary{cursor:pointer;list-style:none}
+.stats-compare summary::-webkit-details-marker{display:none}
+.stats-compare summary h2{display:inline}
+.stats-compare summary::before{content:"▸ ";color:var(--muted)}
+.stats-compare[open] summary::before{content:"▾ "}

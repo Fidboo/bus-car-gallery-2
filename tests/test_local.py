@@ -424,8 +424,11 @@ def test_album_search_filters_by_name(appmod):
 
 
 def hit(client, path, headers=None):
-    """What the script in every page does once the page has loaded."""
-    return client.post("/api/hit", data=path, headers=headers or {}, content_type="text/plain")
+    """What the script in every page sends once a person uses the page."""
+    import json
+    h = {"Accept-Language": "da-DK,da;q=0.9"}
+    h.update(headers or {})
+    return client.post("/api/hit", data=json.dumps({"p": path, "h": 1}), headers=h, content_type="text/plain")
 
 
 def test_views_count_once_per_visitor_and_skip_bots_and_owner(appmod):
@@ -491,7 +494,7 @@ def test_views_count_once_per_visitor_and_skip_bots_and_owner(appmod):
 def test_view_cookie_stays_small_and_ignores_garbage(appmod):
     owner = appmod.app.test_client()
     login(owner)
-    ua = {"User-Agent": "Mozilla/5.0 Chrome/120"}
+    ua = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0) Chrome/120"}
     c = appmod.app.test_client()
     c.set_cookie(appmod.VIEW_COOKIE, ",,x,.5,i1.abc,%s" % ("z" * 50 + ".1"))
     assert hit(c, "/", ua).status_code == 204

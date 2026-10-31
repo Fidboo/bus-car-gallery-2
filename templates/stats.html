@@ -2,19 +2,71 @@
 {% block title %}Stats{% endblock %}
 {% block content %}
 
-<h1>Stats</h1>
-
-<h2>Visitors <span class="hint">(Cloudflare Web Analytics - real browsers, bots filtered out)</span></h2>
-{% if cf and cf.ok %}
+{% macro boxes(data, visits_word, labels) %}
 <div class="stats-summary">
-    {% for key, label in [('day', 'Last 24 hours'), ('week', 'Last 7 days'), ('month', 'Last 30 days')] %}
+    {% for key, label in [('day', labels[0]), ('week', labels[1]), ('month', labels[2])] %}
     <div class="stat-box">
-        <div class="stat-number">{{ cf[key].visits }}</div>
-        <div class="stat-label">Visits · {{ label }}</div>
-        <div class="stat-sub">{{ cf[key].views }} page views</div>
+        <div class="stat-number">{{ data[key].visits }}</div>
+        <div class="stat-label">{{ visits_word }} · {{ label }}</div>
+        <div class="stat-sub">{{ data[key].views }} page views</div>
     </div>
     {% endfor %}
 </div>
+{% endmacro %}
+
+{% macro chart(data, visits_word) %}
+<h3>Page views per day <span class="hint">({{ period_label }}: {{ data.period.views }} page views, {{ data.period.visits }} {{ visits_word|lower }})</span></h3>
+<div class="cf-chart">
+    <div class="cf-axis"><span>{{ data.top }}</span><span>{{ (data.top / 2)|round|int }}</span><span>0</span></div>
+    <div class="cf-days">
+        {% set step = ((data.daily|length) / 10)|round(0, 'ceil')|int %}
+        {% for d in data.daily %}
+        <div class="cf-day" title="{{ d.date }}: {{ d.views }} page views, {{ d.visits }} {{ visits_word|lower }}">
+            <span class="cf-bar {{ 'cf-zero' if not d.views }}" style="height: {{ d.pct }}%"></span>
+            {% if loop.index0 % step == 0 or loop.last %}<span class="cf-date">{{ d.date[8:10] }}/{{ d.date[5:7] }}</span>{% endif %}
+        </div>
+        {% endfor %}
+    </div>
+</div>
+{% endmacro %}
+
+{% macro lists(data, visits_word) %}
+<div class="cf-columns">
+    <div>
+        <h3>Most viewed pages ({{ period_label }})</h3>
+        <table class="stats-table">
+            <thead><tr><th>Page</th><th>Views</th></tr></thead>
+            <tbody>
+            {% for p in data.pages %}
+                <tr><td><a href="{{ p.path }}">{{ p.label }}</a></td><td>{{ p.views }}</td></tr>
+            {% else %}
+                <tr><td colspan="2" class="hint">No visits yet.</td></tr>
+            {% endfor %}
+            </tbody>
+        </table>
+    </div>
+    <div>
+        <h3>Countries ({{ period_label }})</h3>
+        <table class="stats-table">
+            <thead><tr><th>Country</th><th>{{ visits_word }}</th></tr></thead>
+            <tbody>
+            {% for c in data.countries %}<tr><td>{{ c.name }}</td><td>{{ c.visits }}</td></tr>
+            {% else %}<tr><td colspan="2" class="hint">No visits yet.</td></tr>{% endfor %}
+            </tbody>
+        </table>
+        <h3>Came from ({{ period_label }})</h3>
+        <table class="stats-table">
+            <thead><tr><th>Website</th><th>Page views</th></tr></thead>
+            <tbody>
+            {% for r in data.referers %}<tr><td>{{ r.host }}</td><td>{{ r.views }}</td></tr>
+            {% else %}<tr><td colspan="2" class="hint">Nobody came from another website (they typed the address or used a bookmark).</td></tr>{% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+{% endmacro %}
+
+<h1>Stats</h1>
 
 <form class="cf-range" method="get" action="{{ url_for('stats') }}">
     <span class="cf-range-label">Show:</span>
@@ -29,63 +81,31 @@
     </span>
 </form>
 
-<h3>Page views per day <span class="hint">({{ period_label }}: {{ cf.period.views }} page views, {{ cf.period.visits }} visits)</span></h3>
-<div class="cf-chart">
-    <div class="cf-axis"><span>{{ cf.top }}</span><span>{{ (cf.top / 2)|round|int }}</span><span>0</span></div>
-    <div class="cf-days">
-        {% set step = ((cf.daily|length) / 10)|round(0, 'ceil')|int %}
-        {% for d in cf.daily %}
-        <div class="cf-day" title="{{ d.date }}: {{ d.views }} page views, {{ d.visits }} visits">
-            <span class="cf-bar {{ 'cf-zero' if not d.views }}" style="height: {{ d.pct }}%"></span>
-            {% if loop.index0 % step == 0 or loop.last %}<span class="cf-date">{{ d.date[8:10] }}/{{ d.date[5:7] }}</span>{% endif %}
-        </div>
-        {% endfor %}
-    </div>
-</div>
+<h2>Real visitors</h2>
+<p class="hint">Counted by this site. A page view only counts when a person actually uses the page (scrolls, moves the mouse, touches the screen or presses a key) in a normal browser, so bots and scrapers are left out. "Visitors" are different people per day.</p>
+{{ boxes(real, 'Visitors', ['Today', 'Last 7 days', 'Last 30 days']) }}
+{{ chart(real, 'Visitors') }}
+{{ lists(real, 'Visitors') }}
 
-<div class="cf-columns">
-    <div>
-        <h3>Most viewed pages ({{ period_label }})</h3>
-        <table class="stats-table">
-            <thead><tr><th>Page</th><th>Views</th></tr></thead>
-            <tbody>
-            {% for p in cf.pages %}
-                <tr><td><a href="{{ p.path }}">{{ p.label }}</a></td><td>{{ p.views }}</td></tr>
-            {% else %}
-                <tr><td colspan="2" class="hint">No visits yet.</td></tr>
-            {% endfor %}
-            </tbody>
-        </table>
-    </div>
-    <div>
-        <h3>Countries ({{ period_label }})</h3>
-        <table class="stats-table">
-            <thead><tr><th>Country</th><th>Visits</th></tr></thead>
-            <tbody>
-            {% for c in cf.countries %}<tr><td>{{ c.name }}</td><td>{{ c.visits }}</td></tr>{% endfor %}
-            </tbody>
-        </table>
-        <h3>Came from ({{ period_label }})</h3>
-        <table class="stats-table">
-            <thead><tr><th>Website</th><th>Page views</th></tr></thead>
-            <tbody>
-            {% for r in cf.referers %}<tr><td>{{ r.host }}</td><td>{{ r.views }}</td></tr>{% endfor %}
-            </tbody>
-        </table>
-    </div>
-</div>
-{% elif cf_configured %}
-<p class="hint">Could not fetch the numbers from Cloudflare right now ({{ cf.error }}). Try again in a minute.</p>
-{% else %}
-<p class="hint">Cloudflare numbers are not set up yet (needs CF_API_TOKEN and CF_ACCOUNT_ID).</p>
-{% endif %}
+<details class="stats-compare" {{ 'open' if not (cf and cf.ok) and cf_configured }}>
+    <summary><h2>For comparison: Cloudflare Web Analytics</h2></summary>
+    <p class="hint">Cloudflare counts every browser that runs its script, including bots that use a real browser, so these numbers are usually higher.</p>
+    {% if cf and cf.ok %}
+        {{ boxes(cf, 'Visits', ['Last 24 hours', 'Last 7 days', 'Last 30 days']) }}
+        {{ chart(cf, 'Visits') }}
+        {{ lists(cf, 'Visits') }}
+    {% elif cf_configured %}
+        <p class="hint">Could not fetch the numbers from Cloudflare right now ({{ cf.error }}). Try again in a minute.</p>
+    {% else %}
+        <p class="hint">Cloudflare numbers are not set up yet (needs CF_API_TOKEN and CF_ACCOUNT_ID).</p>
+    {% endif %}
+</details>
 
-<h2>This site's own counter</h2>
-<p class="hint">Counted by the site itself since the last reset. Per-photo numbers below come from this counter.</p>
+<h2>Photos</h2>
 <div class="stats-summary">
     <div class="stat-box">
         <div class="stat-number">{{ total_visits }}</div>
-        <div class="stat-label">Total page views</div>
+        <div class="stat-label">Page views since the last reset</div>
     </div>
     <div class="stat-box">
         <div class="stat-number">{{ total_images }}</div>
@@ -97,7 +117,7 @@
     </div>
 </div>
 
-<h2>Categories</h2>
+<h3>Categories</h3>
 <table class="stats-table">
     <thead>
         <tr><th>Category</th><th>Photos</th><th>Views</th></tr>
@@ -113,7 +133,7 @@
     </tbody>
 </table>
 
-<h2>Most viewed photos</h2>
+<h3>Most viewed photos (since the last reset)</h3>
 {% if top_images %}
 <table class="stats-table">
     <thead>

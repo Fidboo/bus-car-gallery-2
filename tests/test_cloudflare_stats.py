@@ -52,7 +52,7 @@ def test_stats_page_shows_cloudflare_numbers(appmod, monkeypatch):
     assert sent["auth"] == "Bearer tok" and '"acc123"' in sent["query"]
     assert 'requestHost: "b12ble.com"' in sent["query"]
     for text in ("350", "1200 page views", "Last 24 hours", "Volvo B10M", "Buses (category)",
-                 "Front page", "Denmark", "www.google.com", "(direct / none)", "This site's own counter"):
+                 "Front page", "Denmark", "www.google.com", "(direct / none)", "Real visitors", "For comparison: Cloudflare"):
         assert text in html, text
     # cached: a second view doesn't ask Cloudflare again
     sent.clear()
@@ -72,7 +72,7 @@ def test_stats_page_without_or_with_broken_cloudflare(appmod, monkeypatch):
         json.dumps({"data": None, "errors": [{"message": "not authorized"}]}).encode()))
     html = c.get("/stats").get_data(as_text=True)
     assert "Could not fetch" in html and "not authorized" in html
-    assert "Total page views" in html               # own counter still shown
+    assert "Real visitors" in html and "Page views since the last reset" in html   # own numbers still shown
     appmod._cf_cache.clear()
 
 
@@ -109,10 +109,10 @@ def test_period_choice_and_every_day_in_chart(appmod, monkeypatch):
     html = c.get("/stats?from=2026-10-01&to=2026-10-07").get_data(as_text=True)
     assert 'datetime_geq: "2026-10-01T00:00:00Z"' in queries[-1]
     assert 'datetime_leq: "2026-10-07T23:59:59Z"' in queries[-1]
-    assert html.count('class="cf-day"') == 7                    # all 7 days, also the empty ones
+    assert html.count('class="cf-day"') == 14     # all 7 days, also the empty ones (own chart + Cloudflare chart)
     assert "77 page views, 33 visits" in html
     html = c.get("/stats?days=7").get_data(as_text=True)
-    assert "last 7 days" in html and html.count('class="cf-day"') in (7, 8)
+    assert "last 7 days" in html and html.count('class="cf-day"') in (14, 16)
     assert "last 30 days" in c.get("/stats?days=12345").get_data(as_text=True)   # unknown -> 30
     c.get("/stats?from=nonsense")                                 # bad dates don't crash
     appmod._cf_cache.clear()

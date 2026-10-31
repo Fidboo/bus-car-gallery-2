@@ -199,6 +199,28 @@ def init_db():
         )
     """)
     conn.execute("INSERT OR IGNORE INTO site_stats (key, value) VALUES ('total_visits', 0)")
+    # "Real visitors": human page views per day (see api_hit). No IP addresses
+    # are stored - a visitor is a daily-changing hash, so it can't be followed
+    # from one day to the next.
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS daily_views (
+            day TEXT NOT NULL, path TEXT NOT NULL, country TEXT NOT NULL,
+            views INTEGER NOT NULL DEFAULT 0,
+            PRIMARY KEY (day, path, country)
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS daily_visitors (
+            day TEXT NOT NULL, visitor TEXT NOT NULL, country TEXT NOT NULL,
+            PRIMARY KEY (day, visitor)
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS daily_refs (
+            day TEXT NOT NULL, host TEXT NOT NULL, views INTEGER NOT NULL DEFAULT 0,
+            PRIMARY KEY (day, host)
+        )
+    """)
     conn.execute("""
         CREATE TABLE IF NOT EXISTS tag_cache (
             category TEXT PRIMARY KEY,
@@ -902,7 +924,9 @@ VIEW_COOKIE = "seen"
 VIEW_WINDOW = 24 * 3600          # seconds before the same visitor counts again
 VIEW_COOKIE_MAX_ENTRIES = 120    # keeps the cookie well below the 4 KB browser limit
 BOT_WORDS = ("bot", "crawl", "spider", "slurp", "preview", "facebookexternalhit",
-             "curl", "wget", "python-requests", "headless")
+             "curl", "wget", "python-requests", "headless", "phantom", "selenium",
+             "puppeteer", "playwright", "scrapy", "httpclient", "go-http", "java/",
+             "okhttp", "node-fetch", "axios", "lighthouse", "pingdom", "uptime")
 
 
 def is_countable_visitor():
@@ -960,22 +984,66 @@ HIT_PATH = re.compile(
 
 @app.route("/api/hit", methods=["POST"])
 def api_hit():
-    path = (request.get_data(as_text=True) or "")[:300].split("?")[0].split("#")[0]
+    """Called by the page (base.html) once a PERSON has shown up: the page is
+    visible and there was a real scroll, mouse move, touch or key press, and
+    the browser doesn't look automated. Everything here is checked again on
+    the server, then counted:
+      - per-photo views and the old total (once per visitor per 24 hours)
+      - "real visitors" per day: page views, unique visitors, country, and the
+        website the visitor came from."""
+    import json
+    raw = (request.get_data(as_text=True) or "")[:1000]
+    try:
+        info = json.loads(raw) if raw.startswith("{") else {"p": raw}
+    except ValueError:
+        return "", 204
+    path = str(info.get("p", ""))[:300].split("?")[0].split("#")[0]
     m = HIT_PATH.match(path)
-    if not m or not is_countable_visitor():
+    if not m or not is_countable_visitor() or not looks_human_request():
+        return "", 204
+    if not info.get("h"):          # old pages (cached before this change) don't prove a human
         return "", 204
     image_id = m.group("image")
+    day = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    country = (request.headers.get("CF-IPCountry", "") or "").strip().upper()[:2]
+    if not re.fullmatch(r"[A-Z]{2}", country) or country in ("XX", "T1"):
+        country = "??"
     try:
         conn = get_db()
         if image_id and first_view(f"i{image_id}"):
             conn.execute("UPDATE images SET views = views + 1 WHERE id = ?", (int(image_id),))
         if first_view("p" + format(zlib.crc32(path.encode("utf-8")), "x")):
             conn.execute("UPDATE site_stats SET value = value + 1 WHERE key = 'total_visits'")
+            conn.execute(
+                "INSERT INTO daily_views (day, path, country, views) VALUES (?, ?, ?, 1) "
+                "ON CONFLICT (day, path, country) DO UPDATE SET views = views + 1",
+                (day, path, country))
+            conn.execute("INSERT OR IGNORE INTO daily_visitors (day, visitor, country) VALUES (?, ?, ?)",
+                         (day, visitor_hash(day), country))
+            ref = str(info.get("r", ""))[:100].lower().strip()
+            if ref and re.fullmatch(r"[a-z0-9.-]+", ref) and ref.removeprefix("www.") != (CF_HOST or "").removeprefix("www."):
+                conn.execute(
+                    "INSERT INTO daily_refs (day, host, views) VALUES (?, ?, 1) "
+                    "ON CONFLICT (day, host) DO UPDATE SET views = views + 1", (day, ref))
         conn.commit()
         conn.close()
     except Exception:
-        pass
+        app.logger.exception("Could not count a page view")
     return "", 204
+
+
+def looks_human_request():
+    """Server-side checks on the counting request: real browsers always send
+    a language and a normal-length browser name."""
+    ua = request.headers.get("User-Agent", "")
+    return len(ua) >= 20 and "mozilla/" in ua.lower() and bool(request.headers.get("Accept-Language"))
+
+
+def visitor_hash(day):
+    """Anonymous id for 'unique visitors per day': changes every day and can't
+    be turned back into an IP address."""
+    raw = f"{SECRET_KEY}|{day}|{client_ip()}|{request.headers.get('User-Agent', '')}"
+    return hashlib.sha256(raw.encode()).hexdigest()[:16]
 
 
 # --- Slowing down scrapers ----------------------------------------------------
@@ -2018,6 +2086,71 @@ def label_paths(conn, pages):
     return out
 
 
+def real_visitor_stats(conn, start, end):
+    """'Real visitors' (human page views counted by api_hit) for start..end,
+    plus fixed boxes for today / 7 days / 30 days. Days are UTC dates."""
+    from datetime import timedelta
+    today = datetime.now(timezone.utc).date()
+    d0, d1 = start.date().isoformat(), end.date().isoformat()
+
+    def totals(a, b):
+        views = conn.execute("SELECT COALESCE(SUM(views), 0) FROM daily_views WHERE day BETWEEN ? AND ?",
+                             (a, b)).fetchone()[0]
+        visitors = conn.execute("SELECT COUNT(*) FROM daily_visitors WHERE day BETWEEN ? AND ?",
+                                (a, b)).fetchone()[0]
+        return {"views": views, "visits": visitors}
+
+    out = {
+        "day": totals(today.isoformat(), today.isoformat()),
+        "week": totals((today - timedelta(days=6)).isoformat(), today.isoformat()),
+        "month": totals((today - timedelta(days=29)).isoformat(), today.isoformat()),
+        "period": totals(d0, d1),
+    }
+    views_by_day = dict(conn.execute(
+        "SELECT day, SUM(views) FROM daily_views WHERE day BETWEEN ? AND ? GROUP BY day", (d0, d1)).fetchall())
+    visitors_by_day = dict(conn.execute(
+        "SELECT day, COUNT(*) FROM daily_visitors WHERE day BETWEEN ? AND ? GROUP BY day", (d0, d1)).fetchall())
+    daily, d = [], start.date()
+    while d <= end.date():
+        key = d.isoformat()
+        daily.append({"date": key, "views": views_by_day.get(key, 0), "visits": visitors_by_day.get(key, 0)})
+        d += timedelta(days=1)
+    top = max([x["views"] for x in daily] or [1]) or 1
+    out["daily"] = [{**x, "pct": round(x["views"] * 100 / top)} for x in daily]
+    out["top"] = top
+    pages = [{"path": r[0], "views": r[1]} for r in conn.execute(
+        "SELECT path, SUM(views) AS v FROM daily_views WHERE day BETWEEN ? AND ? "
+        "GROUP BY path ORDER BY v DESC LIMIT 25", (d0, d1))]
+    out["pages"] = label_paths(conn, pages)
+    out["countries"] = [{"name": country_label(r[0]), "visits": r[1]} for r in conn.execute(
+        "SELECT country, COUNT(*) AS n FROM daily_visitors WHERE day BETWEEN ? AND ? "
+        "GROUP BY country ORDER BY n DESC LIMIT 12", (d0, d1))]
+    refs = [{"host": r[0], "views": r[1]} for r in conn.execute(
+        "SELECT host, SUM(views) AS v FROM daily_refs WHERE day BETWEEN ? AND ? "
+        "GROUP BY host ORDER BY v DESC LIMIT 10", (d0, d1))]
+    out["referers"] = refs
+    out["ok"] = True
+    return out
+
+
+COUNTRY_NAMES = {
+    "DK": "Denmark", "SE": "Sweden", "NO": "Norway", "DE": "Germany", "NL": "Netherlands",
+    "GB": "United Kingdom", "US": "United States", "FI": "Finland", "IS": "Iceland",
+    "FR": "France", "BE": "Belgium", "PL": "Poland", "ES": "Spain", "IT": "Italy",
+    "AT": "Austria", "CH": "Switzerland", "CZ": "Czechia", "IE": "Ireland", "CA": "Canada",
+    "AU": "Australia", "SG": "Singapore", "CN": "China", "IN": "India", "RU": "Russia",
+    "JP": "Japan", "BR": "Brazil", "LT": "Lithuania", "LV": "Latvia", "EE": "Estonia",
+    "HU": "Hungary", "PT": "Portugal", "GR": "Greece", "TR": "Turkey", "UA": "Ukraine",
+    "HK": "Hong Kong", "KR": "South Korea", "ZA": "South Africa", "NZ": "New Zealand",
+}
+
+
+def country_label(code):
+    if not code or code == "??":
+        return "Unknown"
+    return COUNTRY_NAMES.get(code, code)
+
+
 @app.route("/stats")
 @login_required
 def stats():
@@ -2042,6 +2175,7 @@ def stats():
     total_images = conn.execute("SELECT COUNT(*) FROM images").fetchone()[0]
     total_comments = conn.execute("SELECT COUNT(*) FROM comments").fetchone()[0]
     start, end, days, from_txt, to_txt, period_label = stats_period(request.args)
+    real = real_visitor_stats(conn, start, end)
     cf = fetch_cloudflare_stats(start, end)
     if cf.get("ok"):
         cf = {**cf, "pages": label_paths(conn, cf["pages"])}
@@ -2052,6 +2186,7 @@ def stats():
 
     return render_template(
         "stats.html",
+        real=real,
         cf=cf,
         cf_configured=cloudflare_configured(),
         cf_ranges=CF_RANGES, cf_days=days, cf_from=from_txt, cf_to=to_txt, period_label=period_label,

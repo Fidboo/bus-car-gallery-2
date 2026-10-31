@@ -12,11 +12,28 @@
     <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
     <script src="{{ url_for('static', filename='prefetch.js') }}" defer></script>
     <script>
-    // Tell the server this page was shown (page-view statistics; scrapers that
-    // only download the HTML don't run this).
-    window.addEventListener('load', function () {
-        try { fetch('/api/hit', { method: 'POST', body: location.pathname, keepalive: true, credentials: 'same-origin' }); } catch (e) {}
-    });
+    // Page-view statistics ("Real visitors"). Counts a view only when a person
+    // is really there: the page is visible, the browser isn't remote-controlled
+    // and there has been a real scroll, mouse move, touch or key press.
+    (function () {
+        var n = navigator, ua = n.userAgent || '';
+        if (n.webdriver || !screen.width || !screen.height || !(n.languages && n.languages.length)) return;
+        if (/headless|phantom|puppeteer|playwright|selenium|lighthouse/i.test(ua)) return;
+        if (/Chrome\//.test(ua) && !/Edg|OPR|SamsungBrowser|; wv\)|FBAN|FBAV|Instagram/.test(ua) && !window.chrome) return;
+        var sent = false, events = ['scroll', 'wheel', 'mousemove', 'pointerdown', 'touchstart', 'keydown'];
+        function stop() { events.forEach(function (ev) { window.removeEventListener(ev, onHuman, true); }); }
+        function onHuman(e) {
+            if (sent || (e && e.isTrusted === false) || document.visibilityState !== 'visible') return;
+            sent = true; stop();
+            var ref = '';
+            try { if (document.referrer) { var r = new URL(document.referrer); if (r.host !== location.host) ref = r.hostname; } } catch (err) {}
+            try {
+                fetch('/api/hit', { method: 'POST', keepalive: true, credentials: 'same-origin',
+                    body: JSON.stringify({ p: location.pathname, h: 1, r: ref }) });
+            } catch (err) {}
+        }
+        events.forEach(function (ev) { window.addEventListener(ev, onHuman, { capture: true, passive: true }); });
+    })();
     </script>
     <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 32 32%22 fill=%22none%22 stroke=%22%232347f5%22 stroke-width=%222.4%22%3E%3Crect x=%224%22 y=%224%22 width=%2224%22 height=%2221%22 rx=%225%22/%3E%3Cpath d=%22M4 16h24%22/%3E%3C/svg%3E">
 </head>

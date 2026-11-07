@@ -1,0 +1,50 @@
+{% extends "base.html" %}
+{% block title %}{{ topic.name }} - {{ topic.count }} photo{{ 's' if topic.count != 1 }}{% if page > 1 %} (page {{ page }}){% endif %} | Vehicle Gallery{% endblock %}
+{% block description %}{{ topic.count }} photo{{ 's' if topic.count != 1 }} tagged "{{ topic.name }}"{% if topic.categories %} ({% for c in topic.categories %}{{ c.label|lower }}{% if not loop.last %}, {% endif %}{% endfor %}){% endif %}{% if topic.years %}, taken {{ topic.years[0] }}{% if topic.years[1] != topic.years[0] %}-{{ topic.years[1] }}{% endif %}{% endif %}. Personal vehicle photo collection.{% endblock %}
+{% block robots %}{% if not indexable %}<meta name="robots" content="noindex, follow">{% endif %}{% endblock %}
+{% block canonical %}{{ absolute_url(url_for('tag_page', slug=topic.slug, page=(page if page > 1 else None))) }}{% endblock %}
+{% block content %}
+
+<p class="back-link"><a href="{{ url_for('tags_list') }}">&larr; All topics</a></p>
+
+<h1>{{ topic.name }}</h1>
+<p class="result-count">
+    {{ topic.count }} photo{{ 's' if topic.count != 1 }} tagged "{{ topic.name }}"{% if topic.years %}, taken {{ topic.years[0] }}{% if topic.years[1] != topic.years[0] %}–{{ topic.years[1] }}{% endif %}{% endif %}.
+    {% if topic.categories|length > 1 %}
+        {% for c in topic.categories %}{{ c.label }}: {{ c.count }}{% if not loop.last %} · {% endif %}{% endfor %}
+    {% endif %}
+</p>
+
+{% if topic.related %}
+<div class="tags topic-related">
+    <span class="hint">Related:</span>
+    {% for r in topic.related %}
+        <a class="tag" href="{{ url_for('tag_page', slug=r.slug) }}">{{ r.name }}</a>
+    {% endfor %}
+</div>
+{% endif %}
+
+<div class="grid">
+    {% for image in images %}
+    <a class="card" data-full="{{ media_url('uploads', image['filename']) }}" href="{{ image_url(image) }}">
+        <img src="{{ thumb_url(image['thumbnail'], image['filename']) }}" alt="{{ image_alt(image) }}" loading="lazy">
+        <div class="card-body">
+            <div class="card-title">{{ image['title'] }}</div>
+        </div>
+    </a>
+    {% endfor %}
+</div>
+
+{% if pages > 1 %}
+<div class="pagination">
+    {% if page > 1 %}
+        <a href="{{ url_for('tag_page', slug=topic.slug, page=(page - 1 if page > 2 else None)) }}">Previous</a>
+    {% endif %}
+    <span>Page {{ page }} of {{ pages }}</span>
+    {% if page < pages %}
+        <a href="{{ url_for('tag_page', slug=topic.slug, page=page + 1) }}">Next</a>
+    {% endif %}
+</div>
+{% endif %}
+
+{% endblock %}

@@ -1,0 +1,20 @@
+{% extends "base.html" %}
+{% block title %}Using the photos | Vehicle Gallery{% endblock %}
+{% block description %}How the photos on Vehicle Gallery may be used, and how to ask for permission.{% endblock %}
+{% block content %}
+
+<h1>Using the photos</h1>
+<div class="license-text">
+    <p>All photos on this site are taken by {{ PHOTOGRAPHER_NAME or 'the owner of this site' }} and are protected by copyright (© {{ PHOTO_CREDIT }}).</p>
+    <ul>
+        <li><strong>Personal use:</strong> you may download the photos and keep them for your own private use.</li>
+        <li><strong>Anything else</strong> – social media, websites, books, magazines, commercial use – needs permission first.</li>
+    </ul>
+    {% if CONTACT_EMAIL %}
+    <p>To ask for permission, write to <a href="mailto:{{ CONTACT_EMAIL }}">{{ CONTACT_EMAIL }}</a> and mention the photo's address.</p>
+    {% else %}
+    <p>To ask for permission, leave a comment on the photo you would like to use.</p>
+    {% endif %}
+</div>
+
+{% endblock %}

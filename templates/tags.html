@@ -1,0 +1,24 @@
+{% extends "base.html" %}
+{% block title %}All topics - operators, models and places | Vehicle Gallery{% endblock %}
+{% block description %}All {{ total }} topics in the vehicle photo collection: bus operators, makes and models, places and more, each with its photos.{% endblock %}
+{% block content %}
+
+<h1>All topics</h1>
+<p class="result-count">{{ total }} topics with at least 3 photos. Click one to see all its photos.</p>
+
+<nav class="topic-letters">
+    {% for letter, items in groups %}<a href="#t-{{ letter }}">{{ letter }}</a>{% endfor %}
+</nav>
+
+{% for letter, items in groups %}
+<section class="topic-group" id="t-{{ letter }}">
+    <h2>{{ letter }}</h2>
+    <ul class="topic-list">
+        {% for t in items %}
+        <li><a href="{{ url_for('tag_page', slug=t.slug) }}">{{ t.name }}</a> <span class="hint">{{ t.count }}</span></li>
+        {% endfor %}
+    </ul>
+</section>
+{% endfor %}
+
+{% endblock %}

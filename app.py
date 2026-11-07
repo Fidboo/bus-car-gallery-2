@@ -126,6 +126,11 @@ SITE_URL = os.environ.get("SITE_URL", "").strip().rstrip("/")
 # Optional contact email. If left empty, the "Contact us" link is hidden.
 CONTACT_EMAIL = os.environ.get("CONTACT_EMAIL", "").strip()
 
+# Shown to Google Images as who took / owns the photos (see /license).
+# PHOTOGRAPHER_NAME is optional; without it only the site name is credited.
+PHOTOGRAPHER_NAME = os.environ.get("PHOTOGRAPHER_NAME", "").strip()
+PHOTO_CREDIT = os.environ.get("PHOTO_CREDIT", "").strip() or PHOTOGRAPHER_NAME or "Vehicle Gallery (b12ble.com)"
+
 os.makedirs(DATA_DIR, exist_ok=True)
 os.makedirs(TMP_FOLDER, exist_ok=True)
 
@@ -293,6 +298,7 @@ def init_db():
     conn.execute("CREATE INDEX IF NOT EXISTS idx_rate_events ON rate_events(kind, ip, ts)")
 
     setup_search_index(conn)
+    setup_tag_index(conn)
 
     conn.commit()
     conn.close()
@@ -349,6 +355,76 @@ def setup_search_index(conn):
         conn.execute(f"""INSERT INTO images_fts(rowid, title, tags, caption, albums)
             SELECT id, title, tags, caption, {albums_of.format(id="images.id")} FROM images""")
     FTS_OK = True
+
+
+
+# Topic pages (/tag/arriva): one row per photo and tag in image_tags. SQLite
+# triggers can't split the comma-separated tags themselves, so they only mark
+# a photo as changed (tag_dirty) - whether it was changed by this app or by a
+# tool - and refresh_tag_index() brings those photos up to date when tags are
+# next needed. Deleting a photo removes its rows directly.
+def setup_tag_index(conn):
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS image_tags (
+            slug TEXT NOT NULL, image_id INTEGER NOT NULL, tag TEXT NOT NULL,
+            PRIMARY KEY (slug, image_id)
+        ) WITHOUT ROWID
+    """)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_image_tags_image ON image_tags(image_id)")
+    conn.execute("CREATE TABLE IF NOT EXISTS tag_dirty (image_id INTEGER PRIMARY KEY)")
+    conn.execute("""CREATE TRIGGER IF NOT EXISTS image_tags_ai AFTER INSERT ON images BEGIN
+        INSERT OR IGNORE INTO tag_dirty (image_id) VALUES (new.id); END""")
+    conn.execute("""CREATE TRIGGER IF NOT EXISTS image_tags_au AFTER UPDATE OF tags ON images BEGIN
+        INSERT OR IGNORE INTO tag_dirty (image_id) VALUES (new.id); END""")
+    conn.execute("""CREATE TRIGGER IF NOT EXISTS image_tags_ad AFTER DELETE ON images BEGIN
+        DELETE FROM image_tags WHERE image_id = old.id;
+        DELETE FROM tag_dirty WHERE image_id = old.id; END""")
+    has_rows = conn.execute("SELECT 1 FROM image_tags LIMIT 1").fetchone()
+    if not has_rows:                       # first start (or emptied): index every photo
+        conn.execute("INSERT OR IGNORE INTO tag_dirty (image_id) SELECT id FROM images")
+    refresh_tag_index(conn)
+
+
+def split_tags(text):
+    """'Arriva, Volvo 8900LE, arriva' -> [('arriva', 'Arriva'), ('volvo-8900le', 'Volvo 8900LE')]"""
+    seen, out = set(), []
+    for tag in (text or "").split(","):
+        tag = " ".join(tag.split())
+        if not tag:
+            continue
+        slug = slugify(tag, max_len=80)
+        if slug == "photo" and tag.lower() != "photo":
+            continue                        # nothing left after cleaning (e.g. only symbols)
+        if slug not in seen:
+            seen.add(slug)
+            out.append((slug, tag))
+    return out
+
+
+_tag_cache_version = [0]
+
+
+def refresh_tag_index(conn):
+    """Re-index the photos marked in tag_dirty. Cheap when nothing changed."""
+    changed = False
+    while True:
+        ids = [r[0] for r in conn.execute("SELECT image_id FROM tag_dirty LIMIT 2000")]
+        if not ids:
+            break
+        marks = ",".join("?" * len(ids))
+        rows = conn.execute(f"SELECT id, tags FROM images WHERE id IN ({marks})", ids).fetchall()
+        conn.execute(f"DELETE FROM image_tags WHERE image_id IN ({marks})", ids)
+        conn.executemany("INSERT OR IGNORE INTO image_tags (slug, image_id, tag) VALUES (?, ?, ?)",
+                         [(slug, r[0], tag) for r in rows for slug, tag in split_tags(r[1])])
+        conn.execute(f"DELETE FROM tag_dirty WHERE image_id IN ({marks})", ids)
+        conn.commit()
+        changed = True
+    if changed:
+        _tag_cache_version[0] += 1
+        _topic_cache.clear()
+
+
+_topic_cache = {}
 
 
 init_db()
@@ -920,6 +996,9 @@ else:
 def inject_globals():
     return {
         "CONTACT_EMAIL": CONTACT_EMAIL,
+        "PHOTO_CREDIT": PHOTO_CREDIT,
+        "PHOTOGRAPHER_NAME": PHOTOGRAPHER_NAME,
+        "tag_slug": lambda t: slugify(t, max_len=80),
         "CATEGORIES": CATEGORIES,
         "csrf_token": csrf_token,
         "media_url": media_url,
@@ -1223,10 +1302,12 @@ def sitemap_pages():
     conn = get_db()
     albums = conn.execute(
         "SELECT DISTINCT album_id FROM image_albums ORDER BY album_id").fetchall()
+    topics = all_topics(conn)
     conn.close()
-    paths = ["/", "/albums"]
+    paths = ["/", "/albums", "/tags"]
     paths += [url_for("category_view", slug=c["slug"]) for c in CATEGORIES]
     paths += [url_for("album_detail", album_id=a["album_id"]) for a in albums]
+    paths += [url_for("tag_page", slug=t["slug"]) for t in topics]
     body = ('<?xml version="1.0" encoding="UTF-8"?>\n'
             '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n'
             + "".join(f"  <url><loc>{xml_escape(absolute_url(p))}</loc></url>\n" for p in paths)
@@ -1337,6 +1418,132 @@ def category_view(slug):
 
 
 # ---------------------------------------------------------------------------
+# Routes: topic pages (/tag/arriva) and the list of all topics (/tags)
+# ---------------------------------------------------------------------------
+MIN_TOPIC_PHOTOS = 3          # fewer photos: the page works but asks search engines not to index it
+TOPIC_CACHE_SECONDS = 600
+RELATED_PER_TOPIC = 6
+RELATED_MAX_TOPIC_SIZE = 3000  # "bus", "denmark" ... are too general to be "related"
+
+
+def topic_info(conn, slug):
+    """Name, photo count, categories, years and related topics of one tag."""
+    refresh_tag_index(conn)
+    key = ("topic", slug)
+    hit = _topic_cache.get(key)
+    if hit and hit[0] > time.time():
+        return hit[1]
+    count = conn.execute("SELECT COUNT(*) FROM image_tags WHERE slug = ?", (slug,)).fetchone()[0]
+    if not count:
+        return None
+    name = conn.execute("SELECT tag FROM image_tags WHERE slug = ? GROUP BY tag ORDER BY COUNT(*) DESC, tag "
+                        "LIMIT 1", (slug,)).fetchone()[0]
+    cats = conn.execute(
+        "SELECT i.category, COUNT(*) FROM image_tags t JOIN images i ON i.id = t.image_id "
+        "WHERE t.slug = ? GROUP BY i.category ORDER BY 2 DESC", (slug,)).fetchall()
+    years = conn.execute(
+        "SELECT MIN(substr(i.photo_taken_date, 1, 4)), MAX(substr(i.photo_taken_date, 1, 4)) "
+        "FROM image_tags t JOIN images i ON i.id = t.image_id "
+        "WHERE t.slug = ? AND i.photo_taken_date GLOB '[12][0-9][0-9][0-9]*'", (slug,)).fetchone()
+    related = []
+    if count <= 5000:      # co-occurring tags; skipped for huge tags to keep the page fast
+        related = [{"slug": r[0], "name": r[1], "count": r[2]} for r in conn.execute(
+            "SELECT t2.slug, MIN(t2.tag), COUNT(*) AS n FROM image_tags t1 "
+            "JOIN image_tags t2 ON t2.image_id = t1.image_id AND t2.slug != t1.slug "
+            "WHERE t1.slug = ? GROUP BY t2.slug HAVING n >= 2 ORDER BY n DESC LIMIT 16", (slug,))]
+    info = {
+        "slug": slug, "name": name, "count": count,
+        "categories": [{"slug": c[0], "label": CATEGORY_MAP.get(c[0], {}).get("label", c[0]), "count": c[1]}
+                       for c in cats],
+        "years": (years[0], years[1]) if years and years[0] else None,
+        "related": related,
+    }
+    _topic_cache[key] = (time.time() + TOPIC_CACHE_SECONDS, info)
+    return info
+
+
+def all_topics(conn, min_photos=MIN_TOPIC_PHOTOS):
+    refresh_tag_index(conn)
+    key = ("all", min_photos)
+    hit = _topic_cache.get(key)
+    if hit and hit[0] > time.time():
+        return hit[1]
+    rows = conn.execute(
+        "SELECT slug, COUNT(*) AS n, MIN(tag) FROM image_tags GROUP BY slug HAVING n >= ? "
+        "ORDER BY slug", (min_photos,)).fetchall()
+    topics = [{"slug": r[0], "count": r[1], "name": r[2]} for r in rows]
+    _topic_cache[key] = (time.time() + TOPIC_CACHE_SECONDS, topics)
+    return topics
+
+
+def related_photos(conn, image):
+    """Up to two 'more photos of ...' rows for a photo page: its most specific
+    tags (fewest photos, but at least one other photo)."""
+    refresh_tag_index(conn)
+    tags = conn.execute(
+        "SELECT t.slug, t.tag, (SELECT COUNT(*) FROM image_tags x WHERE x.slug = t.slug) AS n "
+        "FROM image_tags t WHERE t.image_id = ?", (image["id"],)).fetchall()
+    usable = sorted([t for t in tags if 2 <= t["n"] <= RELATED_MAX_TOPIC_SIZE], key=lambda t: (t["n"], t["slug"]))
+    if not usable:
+        usable = sorted([t for t in tags if t["n"] >= 2], key=lambda t: t["n"])[:1]
+    groups, shown = [], {image["id"]}
+    for t in usable:
+        if len(groups) == 2:
+            break
+        marks = ",".join("?" * len(shown))
+        photos = conn.execute(
+            f"SELECT i.id, i.title, i.tags, i.filename, i.thumbnail FROM image_tags x JOIN images i ON i.id = x.image_id "
+            f"WHERE x.slug = ? AND i.id NOT IN ({marks}) ORDER BY i.id DESC LIMIT ?",
+            (t["slug"], *shown, RELATED_PER_TOPIC)).fetchall()
+        if not photos:
+            continue
+        shown.update(p["id"] for p in photos)
+        groups.append({"slug": t["slug"], "name": t["tag"], "count": t["n"], "photos": photos})
+    return groups
+
+
+@app.route("/tag/<slug>")
+def tag_page(slug):
+    clean = slugify(slug, max_len=80)
+    if clean != slug:
+        return redirect(url_for("tag_page", slug=clean), code=301)
+    page = max(1, request.args.get("page", 1, type=int))
+    conn = get_db()
+    info = topic_info(conn, slug)
+    if info is None:
+        conn.close()
+        abort(404)
+    pages = max(1, (info["count"] + PER_PAGE - 1) // PER_PAGE)
+    if page > pages:
+        conn.close()
+        return redirect(url_for("tag_page", slug=slug, page=pages if pages > 1 else None))
+    images = conn.execute(
+        "SELECT i.* FROM image_tags t JOIN images i ON i.id = t.image_id WHERE t.slug = ? "
+        "ORDER BY i.id DESC LIMIT ? OFFSET ?", (slug, PER_PAGE, (page - 1) * PER_PAGE)).fetchall()
+    conn.close()
+    return render_template("tag.html", topic=info, images=images, page=page, pages=pages,
+                           indexable=info["count"] >= MIN_TOPIC_PHOTOS)
+
+
+@app.route("/tags")
+def tags_list():
+    conn = get_db()
+    topics = all_topics(conn)
+    conn.close()
+    groups = {}
+    for t in topics:
+        first = t["slug"][0]
+        groups.setdefault(first.upper() if first.isalpha() else "0-9", []).append(t)
+    order = sorted(groups, key=lambda k: (k == "0-9", k))
+    return render_template("tags.html", groups=[(k, groups[k]) for k in order], total=len(topics))
+
+
+@app.route("/license")
+def license_page():
+    return render_template("license.html")
+
+
+# ---------------------------------------------------------------------------
 # Routes: single image detail (with browsing, comments, EXIF date)
 # ---------------------------------------------------------------------------
 @app.route("/image/<int:image_id>", defaults={"slug": None})
@@ -1382,6 +1589,7 @@ def image_detail(image_id, slug):
         "SELECT * FROM comments WHERE image_id = ? ORDER BY created_at ASC", (image_id,)
     ).fetchall()
     image_albums = get_albums_for_image(conn, image_id)
+    related = related_photos(conn, row)
     next_full_url = None
     prev_image = next_image = None
     if prev_id:
@@ -1405,6 +1613,7 @@ def image_detail(image_id, slug):
         next_image=next_image,
         image=row,
         image_albums=image_albums,
+        related=related,
         comments=comments,
         prev_id=prev_id,
         next_id=next_id,

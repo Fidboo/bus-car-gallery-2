@@ -15,6 +15,12 @@
         "contentUrl": absolute_url(media_url('uploads', image['filename'])),
         "thumbnailUrl": absolute_url(thumb_url(image['thumbnail'], image['filename'])),
         "keywords": image['tags'],
+        "license": absolute_url(url_for('license_page')),
+        "acquireLicensePage": absolute_url(url_for('license_page')),
+        "creditText": PHOTO_CREDIT,
+        "copyrightNotice": "© " ~ PHOTO_CREDIT,
+        "creator": {"@type": "Person", "name": PHOTOGRAPHER_NAME} if PHOTOGRAPHER_NAME else {"@type": "Organization", "name": PHOTO_CREDIT},
+        "dateCreated": (image['photo_taken_date'] or '')[:10] or None,
     }|tojson }}</script>
 {% endblock %}
 {% block content %}
@@ -112,7 +118,7 @@
         {% if image['tags'] %}
         <div class="tags">
             {% for tag in image['tags'].split(',') %}
-                <a class="tag" href="{{ url_for('category_view', slug=image['category'], q=tag.strip()) }}">{{ tag.strip() }}</a>
+                {% if tag.strip() %}<a class="tag" href="{{ url_for('tag_page', slug=tag_slug(tag.strip())) }}">{{ tag.strip() }}</a>{% endif %}
             {% endfor %}
         </div>
         {% endif %}
@@ -127,7 +133,7 @@
 
         <div class="download-box">
             <a class="button-link" href="{{ url_for('download_image', image_id=image['id']) }}">Download photo</a>
-            <p class="hint">This photo may be downloaded for personal use, but must not be used on social media or elsewhere without permission.</p>
+            <p class="hint">This photo may be downloaded for personal use, but must not be used on social media or elsewhere without permission. <a href="{{ url_for('license_page') }}">More about using the photos</a></p>
         </div>
 
         {% if session.get('logged_in') %}
@@ -201,6 +207,25 @@ document.addEventListener('keydown', function (e) {
     if (e.key === 'Escape') closeLightbox();
 });
 </script>
+
+{% if related %}
+<section class="related-section">
+    {% for group in related %}
+    <div class="related-group">
+        <h2>More photos tagged "{{ group.name }}"
+            <a class="related-all" href="{{ url_for('tag_page', slug=group.slug) }}">See all {{ group.count }} &rarr;</a></h2>
+        <div class="related-grid">
+            {% for p in group.photos %}
+            <a class="card" data-full="{{ media_url('uploads', p['filename']) }}" href="{{ image_url(p) }}">
+                <img src="{{ thumb_url(p['thumbnail'], p['filename']) }}" alt="{{ image_alt(p) }}" loading="lazy">
+                <div class="card-body"><div class="card-title">{{ p['title'] }}</div></div>
+            </a>
+            {% endfor %}
+        </div>
+    </div>
+    {% endfor %}
+</section>
+{% endif %}
 
 <section id="comments" class="comments-section">
     <h2>Comments ({{ comments|length }})</h2>

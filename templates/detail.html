@@ -213,7 +213,7 @@ document.addEventListener('keydown', function (e) {
     {% for group in related %}
     <div class="related-group">
         <h2>More photos tagged "{{ group.name }}"
-            <a class="related-all" href="{{ url_for('tag_page', slug=group.slug) }}">See all {{ group.count }} &rarr;</a></h2>
+            <a class="related-all" href="{{ url_for('tag_page', slug=group.slug, cat=group.category) }}">See all {{ group.count }} &rarr;</a></h2>
         <div class="related-grid">
             {% for p in group.photos %}
             <a class="card" data-full="{{ media_url('uploads', p['filename']) }}" href="{{ image_url(p) }}">

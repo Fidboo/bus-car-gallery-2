@@ -104,3 +104,30 @@ def test_site_starts_with_existing_photos_and_no_topic_index(tmp_path):
                  "print(c.execute(\"SELECT COUNT(*) FROM image_tags WHERE slug = 'arriva'\").fetchone()[0])")
     assert second.returncode == 0, second.stderr
     assert second.stdout.strip().splitlines()[-1] == "5"
+
+
+def test_related_photos_stay_in_the_same_category(appmod):
+    conn = _db(appmod)
+    car = _tagged(conn, "Volvo 240 GL", "Volvo, 240")
+    conn.execute("UPDATE images SET category = 'car' WHERE id = ?", (car,))
+    other_cars = []
+    for i in range(3):
+        cid = _tagged(conn, f"Volvo 740 {i}", "Volvo")
+        conn.execute("UPDATE images SET category = 'car' WHERE id = ?", (cid,))
+        other_cars.append(cid)
+    buses = [_tagged(conn, f"Volvo bus {i}", "Volvo") for i in range(5)]   # category 'bus'
+    conn.commit()
+    client = appmod.app.test_client()
+    html = client.get(f"/image/{car}", follow_redirects=True).get_data(as_text=True)
+    related = html[html.index('class="related-section"'):html.index('id="comments"')]
+    assert all(f"/image/{c}-" in related for c in other_cars)
+    assert not any(f"/image/{b}-" in related for b in buses)
+    assert "See all 4" in related and 'href="/tag/volvo?cat=car"' in related
+    # the topic page filtered on cars shows only cars, and isn't indexed separately
+    page = client.get("/tag/volvo?cat=car").get_data(as_text=True)
+    assert "Volvo 740 0" in page and "Volvo bus" not in page
+    assert 'content="noindex, follow"' in page and 'rel="canonical" href="http://localhost/tag/volvo"' in page
+    assert "Cars (4)" in page and "All (9)" in page
+    whole = client.get("/tag/volvo").get_data(as_text=True)
+    assert "Volvo bus 0" in whole and "noindex" not in whole
+    assert client.get("/tag/volvo?cat=nonsense").status_code == 302

@@ -1478,12 +1478,15 @@ def all_topics(conn, min_photos=MIN_TOPIC_PHOTOS):
 
 
 def related_photos(conn, image):
-    """Up to two 'more photos of ...' rows for a photo page: its most specific
-    tags (fewest photos, but at least one other photo)."""
+    """Up to two 'more photos of ...' rows for a photo page: photos in the SAME
+    category (a car page shows cars) sharing its most specific tags (fewest
+    photos, but at least one other photo)."""
     refresh_tag_index(conn)
+    category = image["category"]
     tags = conn.execute(
-        "SELECT t.slug, t.tag, (SELECT COUNT(*) FROM image_tags x WHERE x.slug = t.slug) AS n "
-        "FROM image_tags t WHERE t.image_id = ?", (image["id"],)).fetchall()
+        "SELECT t.slug, t.tag, (SELECT COUNT(*) FROM image_tags x JOIN images j ON j.id = x.image_id "
+        "                       WHERE x.slug = t.slug AND j.category = ?) AS n "
+        "FROM image_tags t WHERE t.image_id = ?", (category, image["id"])).fetchall()
     usable = sorted([t for t in tags if 2 <= t["n"] <= RELATED_MAX_TOPIC_SIZE], key=lambda t: (t["n"], t["slug"]))
     if not usable:
         usable = sorted([t for t in tags if t["n"] >= 2], key=lambda t: t["n"])[:1]
@@ -1494,12 +1497,13 @@ def related_photos(conn, image):
         marks = ",".join("?" * len(shown))
         photos = conn.execute(
             f"SELECT i.id, i.title, i.tags, i.filename, i.thumbnail FROM image_tags x JOIN images i ON i.id = x.image_id "
-            f"WHERE x.slug = ? AND i.id NOT IN ({marks}) ORDER BY i.id DESC LIMIT ?",
-            (t["slug"], *shown, RELATED_PER_TOPIC)).fetchall()
+            f"WHERE x.slug = ? AND i.category = ? AND i.id NOT IN ({marks}) ORDER BY i.id DESC LIMIT ?",
+            (t["slug"], category, *shown, RELATED_PER_TOPIC)).fetchall()
         if not photos:
             continue
         shown.update(p["id"] for p in photos)
-        groups.append({"slug": t["slug"], "name": t["tag"], "count": t["n"], "photos": photos})
+        groups.append({"slug": t["slug"], "name": t["tag"], "count": t["n"], "photos": photos,
+                       "category": category})
     return groups
 
 
@@ -1509,21 +1513,33 @@ def tag_page(slug):
     if clean != slug:
         return redirect(url_for("tag_page", slug=clean), code=301)
     page = max(1, request.args.get("page", 1, type=int))
+    cat = request.args.get("cat", "").strip()
     conn = get_db()
     info = topic_info(conn, slug)
     if info is None:
         conn.close()
         abort(404)
-    pages = max(1, (info["count"] + PER_PAGE - 1) // PER_PAGE)
+    cat_counts = {c["slug"]: c["count"] for c in info["categories"]}
+    if cat and cat not in cat_counts:
+        conn.close()
+        return redirect(url_for("tag_page", slug=slug))
+    shown = cat_counts[cat] if cat else info["count"]
+    pages = max(1, (shown + PER_PAGE - 1) // PER_PAGE)
     if page > pages:
         conn.close()
-        return redirect(url_for("tag_page", slug=slug, page=pages if pages > 1 else None))
+        return redirect(url_for("tag_page", slug=slug, cat=cat or None, page=pages if pages > 1 else None))
+    where, params = "t.slug = ?", [slug]
+    if cat:
+        where += " AND i.category = ?"
+        params.append(cat)
     images = conn.execute(
-        "SELECT i.* FROM image_tags t JOIN images i ON i.id = t.image_id WHERE t.slug = ? "
-        "ORDER BY i.id DESC LIMIT ? OFFSET ?", (slug, PER_PAGE, (page - 1) * PER_PAGE)).fetchall()
+        f"SELECT i.* FROM image_tags t JOIN images i ON i.id = t.image_id WHERE {where} "
+        "ORDER BY i.id DESC LIMIT ? OFFSET ?", (*params, PER_PAGE, (page - 1) * PER_PAGE)).fetchall()
     conn.close()
-    return render_template("tag.html", topic=info, images=images, page=page, pages=pages,
-                           indexable=info["count"] >= MIN_TOPIC_PHOTOS)
+    # A category filter (?cat=car) is for visitors; search engines get the whole topic.
+    return render_template("tag.html", topic=info, images=images, page=page, pages=pages, cat=cat,
+                           shown=shown, cat_label=CATEGORY_MAP.get(cat, {}).get("label", ""),
+                           indexable=info["count"] >= MIN_TOPIC_PHOTOS and not cat)
 
 
 @app.route("/tags")

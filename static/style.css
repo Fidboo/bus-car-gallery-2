@@ -583,3 +583,5 @@ code{background:var(--tile);padding:1px 6px;border-radius:4px}
 @media (max-width:900px){.related-grid{grid-template-columns:repeat(3,minmax(0,1fr))}}
 @media (max-width:520px){.related-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
 .license-text{max-width:680px;line-height:1.6}
+
+.topic-cats{display:flex;flex-wrap:wrap;gap:8px;margin:4px 0 16px}

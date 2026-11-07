@@ -78,3 +78,29 @@ def test_photo_page_related_photos_tag_links_and_licence(appmod):
     assert ld["license"].endswith("/license") and ld["acquireLicensePage"].endswith("/license")
     assert ld["creditText"] and ld["copyrightNotice"].startswith("©") and ld["dateCreated"] == "2016-07-12"
     assert "Using the photos" in client.get("/license").get_data(as_text=True)
+
+
+def test_site_starts_with_existing_photos_and_no_topic_index(tmp_path):
+    """Regression: on the server the topic index is built at start-up from an
+    existing database - that must work (and not crash the site)."""
+    import os
+    import sqlite3
+    import subprocess
+    import sys
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    env = dict(os.environ, GALLERY_DEV="1", DATA_DIR=str(tmp_path), AUTO_BACKUP="0")
+    run = lambda code: subprocess.run([sys.executable, "-c", code], cwd=root, env=env,
+                                      capture_output=True, text=True, timeout=60)
+    first = run("import app")                                    # creates the database
+    assert first.returncode == 0, first.stderr
+    db = sqlite3.connect(tmp_path / "gallery.db")
+    db.executemany("INSERT INTO images (title, tags, filename, thumbnail, uploaded_at, category) "
+                   "VALUES (?, ?, 'f.jpg', 't.jpg', 'x', 'bus')", [(f"Bus {i}", "Arriva, bus") for i in range(5)])
+    db.execute("DELETE FROM image_tags")
+    db.execute("DELETE FROM tag_dirty")
+    db.commit()
+    db.close()
+    second = run("import app; c = app.get_db(); "
+                 "print(c.execute(\"SELECT COUNT(*) FROM image_tags WHERE slug = 'arriva'\").fetchone()[0])")
+    assert second.returncode == 0, second.stderr
+    assert second.stdout.strip().splitlines()[-1] == "5"

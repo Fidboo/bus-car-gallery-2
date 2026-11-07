@@ -382,7 +382,8 @@ def setup_tag_index(conn):
     has_rows = conn.execute("SELECT 1 FROM image_tags LIMIT 1").fetchone()
     if not has_rows:                       # first start (or emptied): index every photo
         conn.execute("INSERT OR IGNORE INTO tag_dirty (image_id) SELECT id FROM images")
-    refresh_tag_index(conn)
+    # The marked photos are indexed at the end of this file (warm_tag_index),
+    # when everything the indexing needs (slugify ...) has been defined.
 
 
 def split_tags(text):
@@ -2476,6 +2477,20 @@ def stats():
         total_images=total_images,
         total_comments=total_comments,
     )
+
+
+def warm_tag_index():
+    """Index changed photos once at start-up. Never stops the site from
+    starting: if it fails, it is retried when a topic page is opened."""
+    try:
+        conn = get_db()
+        refresh_tag_index(conn)
+        conn.close()
+    except Exception:
+        app.logger.exception("Could not build the topic index at start-up")
+
+
+warm_tag_index()
 
 
 if __name__ == "__main__":

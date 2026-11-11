@@ -116,10 +116,15 @@
 
     // ---------- adding files ----------
     function addFiles(fileList) {
-        var added = [], skipped = 0;
+        var added = [], skipped = 0, twice = 0;
         Array.prototype.forEach.call(fileList, function (file) {
             var ext = (file.name.split('.').pop() || '').toLowerCase();
             if (ALLOWED.indexOf(ext) === -1) { skipped++; return; }
+            // the same file added again (same name, size and date) is left out
+            var same = photos.some(function (q) {
+                return q.file.name === file.name && q.file.size === file.size && q.file.lastModified === file.lastModified;
+            });
+            if (same) { twice++; return; }
             var p = {
                 id: nextId++, file: file, url: '',
                 title: baseName(file.name), category: '', caption: '', tags: [], albumIds: [],
@@ -133,7 +138,8 @@
             selected = new Set(added.map(function (p) { return p.id; }));   // new batch is selected, ready to categorise
             lastIdx = null;
         }
-        if (skipped) showBanner('warn', skipped + ' file(s) skipped: only JPG, PNG, GIF and WEBP are supported.');
+        if (twice) showBanner('warn', twice + ' file(s) were already in the list and were not added again.');
+        else if (skipped) showBanner('warn', skipped + ' file(s) skipped: only JPG, PNG, GIF and WEBP are supported.');
         else if (added.length) hideBanner();
         refreshAll();
     }
@@ -292,7 +298,7 @@
             t.descEl.title = p.caption.trim() ? p.caption : 'Click to add a description';
         }
         t.bar.style.width = (p.status === 'done' ? 100 : p.progress) + '%';
-        t.msg.textContent = p.status === 'done' ? ('✓ ' + (p.seconds !== undefined ? p.seconds + ' s' + (p.serverSeconds !== undefined ? ' (server ' + Math.round(p.serverSeconds) + ' s)' : '') : 'Uploaded')) : (p.status === 'error' ? p.error : (p.status === 'uploading' ? (p.prep ? 'Preparing…' : p.progress + '%') : ''));
+        t.msg.textContent = (p.status === 'done' && p.duplicate) ? '✓ Already on the site (not added twice)' : p.status === 'done' ? ('✓ ' + (p.seconds !== undefined ? p.seconds + ' s' + (p.serverSeconds !== undefined ? ' (server ' + Math.round(p.serverSeconds) + ' s)' : '') : 'Uploaded')) : (p.status === 'error' ? p.error : (p.status === 'uploading' ? (p.prep ? 'Preparing…' : p.progress + '%') : ''));
 
         var bits = [];
         if (p.status === 'done') { t.sub.textContent = catLabel(p.category); t.sub.className = 'o-sub'; return; }
@@ -645,9 +651,23 @@
         }, function () { cb(null); });
     }
 
+    // Fingerprint (SHA-256) of the original file. The server uses it to refuse
+    // a photo it already has, e.g. when "retry" follows an upload that was in
+    // fact saved. Calls back with '' when the browser can't do it.
+    function fileHash(p, cb) {
+        if (p.sha !== undefined) { cb(p.sha); return; }
+        if (!(window.crypto && crypto.subtle && p.file.arrayBuffer)) { p.sha = ''; cb(''); return; }
+        p.file.arrayBuffer().then(function (buf) { return crypto.subtle.digest('SHA-256', buf); }).then(function (d) {
+            p.sha = Array.prototype.map.call(new Uint8Array(d), function (b) { return ('0' + b.toString(16)).slice(-2); }).join('');
+            cb(p.sha);
+        }, function () { p.sha = ''; cb(''); });
+    }
+
     function sendOne(p, cb) {
         p.status = 'uploading'; p.progress = 0; p.prep = true; p.t0 = Date.now(); updateTile(p);
-        prepareFile(p.file, function (prep) { p.prep = false; sendPrepared(p, prep, cb); });
+        fileHash(p, function () {
+            prepareFile(p.file, function (prep) { p.prep = false; sendPrepared(p, prep, cb); });
+        });
     }
 
     function sendPrepared(p, prep, cb) {
@@ -658,6 +678,7 @@
             fd.append('thumb', prep.thumb, 'thumb.jpg');
             fd.append('exifhead', prep.head, 'head.jpg');
         }
+        if (p.sha) fd.append('orig_sha', p.sha);
         fd.append('title', p.title.trim());
         fd.append('caption', p.caption);
         fd.append('tags', p.tags.join(', '));
@@ -678,6 +699,7 @@
             var r = {}; try { r = JSON.parse(xhr.responseText); } catch (e) {}
             if (xhr.status === 200 && r.ok) {
                 p.status = 'done'; p.progress = 100; p.error = '';
+                p.duplicate = !!r.duplicate;
                 p.seconds = Math.round((Date.now() - startedAt) / 1000);
                 if (r.timing && r.timing.total !== undefined) p.serverSeconds = r.timing.total;
                 updateTile(p); cb(true);

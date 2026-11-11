@@ -2,7 +2,8 @@
 {% block title %}{{ category.label }} - photo collection{% if page > 1 %} (page {{ page }}){% endif %} | Vehicle Gallery{% endblock %}
 {% block description %}Browse {{ total }} photos of {{ category.label|lower }}. Search by brand, model or country and download the originals.{% endblock %}
 {% block robots %}{% if query %}<meta name="robots" content="noindex, follow">{% endif %}{% endblock %}
-{% block canonical %}{{ absolute_url(url_for('category_view', slug=category.slug, page=(page if page > 1 else None))) }}{% endblock %}
+{# A search (?q=) points to the category itself; plain pages keep their page number. #}
+{% block canonical %}{{ absolute_url(url_for('category_view', slug=category.slug, page=(page if page > 1 and not query else None))) }}{% endblock %}
 {% block content %}
 
 <p class="back-link"><a href="{{ url_for('gallery') }}">&larr; Home</a></p>

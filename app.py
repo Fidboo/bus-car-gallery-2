@@ -123,6 +123,13 @@ app.config.update(
 # is used - but behind a proxy that can come out as http://, so set it in production.
 SITE_URL = os.environ.get("SITE_URL", "").strip().rstrip("/")
 
+# The ONE address search engines should see: https, no "www". Every canonical
+# link, sitemap and robots.txt address is built from it, and requests to
+# www.<host> or the bare *.fly.dev address are sent here with a 301.
+CANONICAL_HOST = (urlparse(SITE_URL).hostname or os.environ.get("CANONICAL_HOST", "b12ble.com")).lower()
+CANONICAL_HOST = CANONICAL_HOST[4:] if CANONICAL_HOST.startswith("www.") else CANONICAL_HOST
+CANONICAL_ORIGIN = f"https://{CANONICAL_HOST}"
+
 # Optional contact email. If left empty, the "Contact us" link is hidden.
 CONTACT_EMAIL = os.environ.get("CONTACT_EMAIL", "").strip()
 
@@ -268,6 +275,12 @@ def init_db():
         conn.execute("ALTER TABLE images ADD COLUMN photo_taken_date TEXT")
     if not column_exists(conn, "images", "views"):
         conn.execute("ALTER TABLE images ADD COLUMN views INTEGER NOT NULL DEFAULT 0")
+    if not column_exists(conn, "images", "content_hash"):
+        # SHA-256 of the ORIGINAL file the uploader chose (computed in the
+        # browser). The same file can't be uploaded twice - e.g. when a retry
+        # follows an upload the server had already saved.
+        conn.execute("ALTER TABLE images ADD COLUMN content_hash TEXT")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_images_content_hash ON images(content_hash)")
 
     # A photo can belong to several albums. image_albums is the source of
     # truth; images.album_id stays as the "main album" (first one), which keeps
@@ -492,6 +505,19 @@ def login_required(view):
             return redirect(url_for("login", next=request.path))
         return view(*args, **kwargs)
     return wrapped
+
+
+@app.before_request
+def redirect_to_canonical_host():
+    """301 www.b12ble.com/... and xxx.fly.dev/... to https://b12ble.com/...
+    (same path and query). http -> https is done by Fly (force_https)."""
+    if IS_DEV or request.path == "/healthz":
+        return None
+    host = (request.host or "").split(":")[0].lower()
+    if host == "www." + CANONICAL_HOST or host.endswith(".fly.dev"):
+        target = CANONICAL_ORIGIN + request.full_path.rstrip("?")
+        return redirect(target, code=301)
+    return None
 
 
 @app.before_request
@@ -930,10 +956,19 @@ def absolute_url(path_or_url):
     """Full https://... address for a path such as /albums."""
     if path_or_url.startswith(("http://", "https://")):
         return path_or_url
-    base = SITE_URL or request.url_root.rstrip("/")
-    if not IS_DEV and base.startswith("http://"):
-        base = "https://" + base[len("http://"):]   # the site is only served over https
-    return base + path_or_url
+    return canonical_origin() + path_or_url
+
+
+def canonical_origin():
+    """https://b12ble.com - from SITE_URL if set (always https, never www),
+    the address of the request while developing, otherwise CANONICAL_ORIGIN."""
+    if SITE_URL:
+        host = (urlparse(SITE_URL).netloc or SITE_URL).lower()
+        host = host[4:] if host.startswith("www.") else host
+        return f"https://{host}"
+    if IS_DEV:
+        return request.url_root.rstrip("/")
+    return CANONICAL_ORIGIN
 
 
 app.jinja_env.globals.update(image_alt=image_alt, image_url=image_url,
@@ -2068,8 +2103,18 @@ def upload_file():
     # Several albums per photo: repeated "album_ids" fields. The old single
     # "album_id" field is still understood.
     raw_albums = request.form.getlist("album_ids") + request.form.getlist("album_id")
+    content_hash = request.form.get("orig_sha", "").strip().lower()
+    if not re.fullmatch(r"[0-9a-f]{64}", content_hash):
+        content_hash = None
 
     conn = get_db()
+    if content_hash:
+        same = conn.execute("SELECT id FROM images WHERE content_hash = ? ORDER BY id LIMIT 1",
+                            (content_hash,)).fetchone()
+        if same:
+            conn.close()
+            app.logger.info("upload skipped: same file as photo %s", same["id"])
+            return jsonify(ok=True, id=same["id"], duplicate=True, timing={})
     try:
         image_id, error = save_new_image(
             conn,
@@ -2082,6 +2127,9 @@ def upload_file():
             request.files.get("thumb"),
             request.files.get("exifhead"),
         )
+        if image_id and content_hash:
+            conn.execute("UPDATE images SET content_hash = ? WHERE id = ?", (content_hash, image_id))
+            conn.commit()
     finally:
         conn.close()
 

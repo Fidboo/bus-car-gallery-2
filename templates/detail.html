@@ -90,13 +90,13 @@
         </script>
         <div class="detail-nav">
             {% if prev_image %}
-                <a href="{{ image_url(prev_image, cat=cat_param, q=(q_param or None), album=album_param) }}">Previous</a>
+                <a id="prevLink" href="{{ image_url(prev_image, cat=cat_param, q=(q_param or None), album=album_param) }}" title="Previous (← arrow key)">Previous</a>
             {% else %}
                 <span class="nav-disabled">Previous</span>
             {% endif %}
             <span class="nav-position">{{ position }} / {{ total_in_context }}</span>
             {% if next_image %}
-                <a href="{{ image_url(next_image, cat=cat_param, q=(q_param or None), album=album_param) }}">Next</a>
+                <a id="nextLink" href="{{ image_url(next_image, cat=cat_param, q=(q_param or None), album=album_param) }}" title="Next (→ arrow key)">Next</a>
             {% else %}
                 <span class="nav-disabled">Next</span>
             {% endif %}
@@ -206,6 +206,28 @@ window.addEventListener('resize', resetLightboxZoom);
 document.addEventListener('keydown', function (e) {
     if (e.key === 'Escape') closeLightbox();
 });
+
+// ← and → go to the previous / next photo (like the Previous / Next links).
+// If the photo was open large, the next one opens large too.
+document.addEventListener('keydown', function (e) {
+    if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
+    if (e.altKey || e.ctrlKey || e.metaKey || e.shiftKey || e.defaultPrevented) return;
+    var t = e.target;
+    if (t && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName))) return;   // typing a comment
+    if (lightboxZoomed) return;
+    var link = document.getElementById(e.key === 'ArrowRight' ? 'nextLink' : 'prevLink');
+    if (!link) return;
+    e.preventDefault();
+    try {
+        if (document.getElementById('lightbox').classList.contains('active')) sessionStorage.setItem('openLarge', '1');
+    } catch (err) {}
+    location.href = link.href;
+});
+(function () {
+    try {
+        if (sessionStorage.getItem('openLarge')) { sessionStorage.removeItem('openLarge'); openLightbox(); }
+    } catch (err) {}
+})();
 </script>
 
 {% if related %}

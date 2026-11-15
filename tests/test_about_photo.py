@@ -9,9 +9,9 @@ BAD = ("None", "null", "undefined", "“”", " ,", ",,", "..", " .", "  ")
 
 def _page(appmod, iid):
     html = appmod.app.test_client().get(f"/image/{iid}", follow_redirects=True).get_data(as_text=True)
-    about = re.search(r'<div class="about-photo">\s*<h2>About this photo</h2>\s*<p>(.*?)</p>', html, re.S)
     ld = json.loads(re.search(r'<script type="application/ld\+json">(.*?)</script>', html, re.S).group(1))
-    return html, (about.group(1).strip() if about else ""), ld
+    assert "About this photo" not in html            # not shown on the page, only for search engines
+    return html, ld.get("description", "").replace("'", "&#39;"), ld
 
 
 def _clean(text):

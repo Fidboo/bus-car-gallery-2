@@ -1327,7 +1327,6 @@ def robots_txt():
         "Allow: /*?q=&",
         "Allow: /*&q=$",
         "Allow: /*&q=&",
-        "Crawl-delay: 5",
         "Disallow: /comment/",
         "Disallow: /image/*/edit",
         "Disallow: /image/*/comment",
@@ -1604,7 +1603,9 @@ def category_count(conn, category):
 
 
 def describe_photo(conn, image, albums, related):
-    """A short, factual 'About this photo' text built ONLY from what is stored
+    """A short, factual text about the photo - used only for search engines
+    (meta description and the ImageObject JSON-LD), not shown on the page -
+    built ONLY from what is stored
     for the photo (title, category, date taken, the photographer's own note,
     albums, tags) and from counts in the collection. A missing field simply
     leaves its sentence out - never 'None', empty quotes or loose commas.

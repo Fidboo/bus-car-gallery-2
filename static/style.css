@@ -586,7 +586,3 @@ code{background:var(--tile);padding:1px 6px;border-radius:4px}
 
 .topic-cats{display:flex;flex-wrap:wrap;gap:8px;margin:4px 0 16px}
 
-/* photo page: About this photo */
-.about-photo{margin:14px 0 18px}
-.about-photo h2{font-size:1rem;margin:0 0 6px}
-.about-photo p{margin:0;line-height:1.6;color:var(--muted)}

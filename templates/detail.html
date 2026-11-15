@@ -143,13 +143,6 @@
             {% endif %}
         </p>
 
-        {% if about %}
-        <div class="about-photo">
-            <h2>About this photo</h2>
-            <p>{{ about|join(' ') }}</p>
-        </div>
-        {% endif %}
-
         <div class="download-box">
             <a class="button-link" href="{{ url_for('download_image', image_id=image['id']) }}">Download photo</a>
             <p class="hint">This photo may be downloaded for personal use, but must not be used on social media or elsewhere without permission. <a href="{{ url_for('license_page') }}">More about using the photos</a></p>

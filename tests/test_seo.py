@@ -1,4 +1,5 @@
 import re
+import re
 import xml.etree.ElementTree as ET
 
 from conftest import login, upload
@@ -64,10 +65,18 @@ def test_grid_and_prev_next_links_use_clean_urls(appmod):
     a = add_photo(appmod, "First bus")
     b = add_photo(appmod, "Second bus")
     c = appmod.app.test_client()
+    # Crawlers only ever see the one clean address of a photo - no ?cat=, ?album=
+    for url in ("/category/bus", "/", f"/image/{b}-second-bus", f"/image/{b}-second-bus?cat=bus"):
+        html = c.get(url).get_data(as_text=True)
+        assert not re.search(r'href="/image/[^"]*\?', html), url
     grid = c.get("/category/bus").get_data(as_text=True)
-    assert f"/image/{a}-first-bus?cat=bus" in grid and f"/image/{b}-second-bus?cat=bus" in grid
-    page = c.get(f"/image/{b}-second-bus?cat=bus").get_data(as_text=True)
-    assert f"/image/{a}-first-bus?cat=bus" in page   # "Next" (older) photo, no redirect hop
+    assert f'href="/image/{a}-first-bus"' in grid and f'href="/image/{b}-second-bus"' in grid
+    page = c.get(f"/image/{b}-second-bus").get_data(as_text=True)
+    assert f'href="/image/{a}-first-bus"' in page     # "Next" (older) photo, no redirect hop
+    # a search keeps its context for visitors only
+    search = c.get("/category/bus?q=bus").get_data(as_text=True)
+    assert f'href="/image/{a}-first-bus" data-ctx="?cat=bus&amp;q=bus"' in search
+    assert "Disallow: /image/*?" in c.get("/robots.txt").get_data(as_text=True)
 
 
 def test_search_results_are_noindex_but_category_is_not(appmod):

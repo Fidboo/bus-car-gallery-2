@@ -12,6 +12,25 @@
     <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
     <script src="{{ url_for('static', filename='prefetch.js') }}" defer></script>
     <script>
+    // Links to photos always point at the photo's one clean address (that is
+    // what search engines follow). When a PERSON opens one from an album or a
+    // search, the album/search is added (data-ctx) so Previous/Next stay in it.
+    (function () {
+        function withContext(a) {
+            var ctx = a.getAttribute('data-ctx');
+            if (ctx && a.href.indexOf('?') === -1) a.href = a.href + ctx;
+            return a.href;
+        }
+        window.withContext = withContext;
+        ['mousedown', 'touchstart', 'focusin', 'click', 'auxclick', 'contextmenu'].forEach(function (ev) {
+            document.addEventListener(ev, function (e) {
+                var a = e.target && e.target.closest ? e.target.closest('a[data-ctx]') : null;
+                if (a) withContext(a);
+            }, { capture: true, passive: true });
+        });
+    })();
+    </script>
+    <script>
     // Page-view statistics ("Real visitors"). A view counts only when a person
     // is really there: a normal (not remote-controlled) browser, a real scroll,
     // mouse move, touch or key press, and at least 10 seconds with the page

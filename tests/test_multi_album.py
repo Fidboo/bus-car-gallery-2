@@ -88,7 +88,8 @@ def test_detail_shows_all_albums_and_neighbors_follow_the_album(appmod):
 
     # browsing inside Beta (newest first): i2 -> i1, and Alpha's photo i3 is never offered
     in_beta = c.get(f"/image/{i2}?album={b}", follow_redirects=True).get_data(as_text=True)
-    assert f"/image/{i1}-one?" in in_beta and f"/image/{i3}-three?" not in in_beta
+    # Previous/Next stay in the album: clean href, album added for visitors via data-ctx
+    assert f'href="/image/{i1}-one" data-ctx="?album={b}"' in in_beta and f"/image/{i3}-three" not in in_beta
 
 
 def test_category_badge_and_search_by_any_album_name(appmod):

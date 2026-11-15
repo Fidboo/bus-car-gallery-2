@@ -1,27 +1,39 @@
 {% extends "base.html" %}
 {% block title %}{{ image['title'] }} - {{ category_label }} | Vehicle Gallery{% endblock %}
-{% block description %}{{ (image['caption'] or (image_alt(image) ~ '. Photo from a personal collection of ' ~ category_label|lower ~ '. The original can be downloaded.'))|truncate(155, True, '...') }}{% endblock %}
+{% block description %}{{ about|join(' ')|truncate(160, True, '...') }}{% endblock %}
 {% block canonical %}{{ absolute_url(url_for('image_detail', image_id=image['id'], slug=slugify(image['title']))) }}{% endblock %}
 {% block head_extra %}
     <meta property="og:type" content="website">
     <meta property="og:title" content="{{ image['title'] }}">
     <meta property="og:image" content="{{ absolute_url(media_url('uploads', image['filename'])) }}">
     <meta property="og:url" content="{{ absolute_url(url_for('image_detail', image_id=image['id'], slug=slugify(image['title']))) }}">
-    <script type="application/ld+json">{{ {
+    {% set page_url = absolute_url(url_for('image_detail', image_id=image['id'], slug=slugify(image['title']))) %}
+    {% set owner = {"@type": "Person", "name": PHOTOGRAPHER_NAME} if PHOTOGRAPHER_NAME else {"@type": "Organization", "name": PHOTO_CREDIT, "url": absolute_url('/')} %}
+    {% set ld = {
         "@context": "https://schema.org",
         "@type": "ImageObject",
         "name": image['title'],
-        "description": image['caption'] or image_alt(image),
+        "description": about|join(' '),
+        "caption": image['caption'] or image['title'],
         "contentUrl": absolute_url(media_url('uploads', image['filename'])),
         "thumbnailUrl": absolute_url(thumb_url(image['thumbnail'], image['filename'])),
+        "url": page_url,
+        "mainEntityOfPage": page_url,
+        "representativeOfPage": true,
         "keywords": image['tags'],
+        "genre": category_label,
         "license": absolute_url(url_for('license_page')),
         "acquireLicensePage": absolute_url(url_for('license_page')),
+        "usageInfo": absolute_url(url_for('license_page')),
         "creditText": PHOTO_CREDIT,
-        "copyrightNotice": "© " ~ PHOTO_CREDIT,
-        "creator": {"@type": "Person", "name": PHOTOGRAPHER_NAME} if PHOTOGRAPHER_NAME else {"@type": "Organization", "name": PHOTO_CREDIT},
-        "dateCreated": (image['photo_taken_date'] or '')[:10] or None,
-    }|tojson }}</script>
+        "copyrightNotice": "© " ~ PHOTO_CREDIT ~ ". This photo may be downloaded for personal use, but must not be used on social media or elsewhere without permission.",
+        "author": owner,
+        "creator": owner,
+        "copyrightHolder": owner,
+        "isPartOf": {"@type": "WebSite", "name": "Vehicle Gallery", "url": absolute_url('/')},
+    } %}
+    {% if image['photo_taken_date'] and image['photo_taken_date'][:10]|length == 10 %}{% set _ = ld.update({"dateCreated": image['photo_taken_date'][:10]}) %}{% endif %}
+    <script type="application/ld+json">{{ ld|tojson }}</script>
 {% endblock %}
 {% block content %}
 
@@ -90,13 +102,13 @@
         </script>
         <div class="detail-nav">
             {% if prev_image %}
-                <a id="prevLink" href="{{ image_url(prev_image, cat=cat_param, q=(q_param or None), album=album_param) }}" title="Previous (← arrow key)">Previous</a>
+                <a id="prevLink" {{ image_link(prev_image, cat=cat_param, q=q_param, album=album_param) }} title="Previous (← arrow key)">Previous</a>
             {% else %}
                 <span class="nav-disabled">Previous</span>
             {% endif %}
             <span class="nav-position">{{ position }} / {{ total_in_context }}</span>
             {% if next_image %}
-                <a id="nextLink" href="{{ image_url(next_image, cat=cat_param, q=(q_param or None), album=album_param) }}" title="Next (→ arrow key)">Next</a>
+                <a id="nextLink" {{ image_link(next_image, cat=cat_param, q=q_param, album=album_param) }} title="Next (→ arrow key)">Next</a>
             {% else %}
                 <span class="nav-disabled">Next</span>
             {% endif %}
@@ -130,6 +142,13 @@
                 Uploaded: {{ image['uploaded_at']|fmtdate }}
             {% endif %}
         </p>
+
+        {% if about %}
+        <div class="about-photo">
+            <h2>About this photo</h2>
+            <p>{{ about|join(' ') }}</p>
+        </div>
+        {% endif %}
 
         <div class="download-box">
             <a class="button-link" href="{{ url_for('download_image', image_id=image['id']) }}">Download photo</a>
@@ -221,7 +240,7 @@ document.addEventListener('keydown', function (e) {
     try {
         if (document.getElementById('lightbox').classList.contains('active')) sessionStorage.setItem('openLarge', '1');
     } catch (err) {}
-    location.href = link.href;
+    location.href = window.withContext ? window.withContext(link) : link.href;
 });
 (function () {
     try {

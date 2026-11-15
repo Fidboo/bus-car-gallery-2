@@ -13,9 +13,10 @@ import zlib
 from collections import Counter
 from datetime import datetime, timezone
 from functools import wraps
-from urllib.parse import urlparse
+from urllib.parse import urlencode, urlparse
 from xml.sax.saxutils import escape as xml_escape
 
+from markupsafe import Markup, escape
 from flask import (
     Flask, render_template, request, redirect, url_for,
     session, send_from_directory, flash, abort, jsonify, g, Response
@@ -306,6 +307,7 @@ def init_db():
     # Indexes keep category pages, album pages, prev/next and comment lookups
     # fast when the collection grows to tens of thousands of photos.
     conn.execute("CREATE INDEX IF NOT EXISTS idx_images_category_id ON images(category, id)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_images_taken ON images(photo_taken_date)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_images_album ON images(album_id, id)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_comments_image ON comments(image_id)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_rate_events ON rate_events(kind, ip, ts)")
@@ -971,7 +973,26 @@ def canonical_origin():
     return CANONICAL_ORIGIN
 
 
-app.jinja_env.globals.update(image_alt=image_alt, image_url=image_url,
+def image_link(image, cat=None, q=None, album=None):
+    """href="..." for a link to a photo page. The href is ALWAYS the clean
+    address (/image/43418-volvo-b10m), so search engines only ever see one URL
+    per photo. Where Previous/Next should stay inside an album or a search,
+    that context goes in data-ctx, and a small script in base.html adds it to
+    the address when a person actually clicks the link. The photo's own
+    category is the default context, so ?cat= is only needed with a search."""
+    params = {}
+    if album:
+        params["album"] = album
+    elif q and cat:
+        params["cat"] = cat
+        params["q"] = q
+    attrs = f'href="{escape(image_url(image))}"'
+    if params:
+        attrs += f' data-ctx="?{escape(urlencode(params))}"'
+    return Markup(attrs)
+
+
+app.jinja_env.globals.update(image_alt=image_alt, image_url=image_url, image_link=image_link,
                              absolute_url=absolute_url, slugify=slugify)
 
 
@@ -1311,6 +1332,9 @@ def robots_txt():
         "Disallow: /image/*/edit",
         "Disallow: /image/*/comment",
         "Disallow: /image/*/delete",
+        # A photo page has ONE address; ?album= / ?cat= versions are only for
+        # visitors' Previous/Next and are never linked for crawlers.
+        "Disallow: /image/*?",
         "",
         f"Sitemap: {absolute_url('/sitemap.xml')}",
         "",
@@ -1542,6 +1566,97 @@ def related_photos(conn, image):
     return groups
 
 
+_MONTHS = ["January", "February", "March", "April", "May", "June", "July", "August",
+           "September", "October", "November", "December"]
+_count_cache = {}
+
+
+def _nice_date(value):
+    """'2015-11-08T10:22:00' -> '8 November 2015'; None for anything unusable."""
+    m = re.match(r"^(\d{4})-(\d{2})-(\d{2})", value or "")
+    if not m:
+        return None
+    y, mo, d = int(m.group(1)), int(m.group(2)), int(m.group(3))
+    if not (1900 <= y <= 2100 and 1 <= mo <= 12 and 1 <= d <= 31):
+        return None
+    return f"{d} {_MONTHS[mo - 1]} {y}"
+
+
+def _join(items):
+    """['a'] -> 'a'; ['a', 'b'] -> 'a and b'; ['a', 'b', 'c'] -> 'a, b and c'."""
+    items = [i for i in items if i]
+    if len(items) <= 1:
+        return "".join(items)
+    return ", ".join(items[:-1]) + " and " + items[-1]
+
+
+def _quoted(text):
+    return "\u201c" + " ".join(text.split()) + "\u201d"
+
+
+def category_count(conn, category):
+    hit = _count_cache.get(category)
+    if hit and hit[0] > time.time():
+        return hit[1]
+    n = conn.execute("SELECT COUNT(*) FROM images WHERE category = ?", (category,)).fetchone()[0]
+    _count_cache[category] = (time.time() + 600, n)
+    return n
+
+
+def describe_photo(conn, image, albums, related):
+    """A short, factual 'About this photo' text built ONLY from what is stored
+    for the photo (title, category, date taken, the photographer's own note,
+    albums, tags) and from counts in the collection. A missing field simply
+    leaves its sentence out - never 'None', empty quotes or loose commas.
+    Returns a list of sentences."""
+    cat = CATEGORY_MAP.get(image["category"])
+    section = cat["label"] if cat else None
+    title = " ".join((image["title"] or "").split())
+    sentences = []
+
+    n_in_cat = category_count(conn, image["category"]) if section else 0
+    where = f"one of {n_in_cat:,} photos in the {section} section of Vehicle Gallery" if section and n_in_cat > 1 \
+        else "a photo in Vehicle Gallery"
+    where += ", a personal collection of vehicle photos"
+    sentences.append(f"{_quoted(title)} is {where}." if title else f"This is {where}.")
+
+    taken = _nice_date(image["photo_taken_date"])
+    if taken:
+        same_day = 0
+        day = image["photo_taken_date"][:10]
+        same_day = conn.execute(
+            "SELECT COUNT(*) FROM images WHERE photo_taken_date >= ? AND photo_taken_date < ? AND id != ?",
+            (day, day + "~", image["id"])).fetchone()[0]
+        line = f"It was taken on {taken}"
+        if same_day == 1:
+            line += ", and one more photo in the collection was taken the same day"
+        elif same_day > 1:
+            line += f", and {same_day:,} more photos in the collection were taken the same day"
+        sentences.append(line + ".")
+
+    note = " ".join((image["caption"] or "").split())
+    if note:
+        sentences.append(f"The photographer's note reads: {_quoted(note)}.")
+
+    names = [a["name"].strip() for a in albums if (a["name"] or "").strip()]
+    if names:
+        shown = names[:3] + ([f"{len(names) - 3} more"] if len(names) > 3 else [])
+        word = "album" if len(names) == 1 else "albums"
+        sentences.append(f"It is part of the {word} {_join([_quoted(n) for n in names[:3]] + shown[3:])}.")
+
+    tags = [t for _, t in split_tags(image["tags"])]
+    if tags:
+        sentences.append(f"It is tagged {_join(tags[:8])}" + (f" and {len(tags) - 8} more" if len(tags) > 8 else "") + ".")
+
+    if related:
+        g = related[0]
+        others = g["count"] - 1
+        if others >= 1 and section:
+            noun = "photo" if others == 1 else "photos"
+            sentences.append(f"The {section} section has {others:,} other {noun} tagged {_quoted(g['name'])}.")
+    return sentences
+
+
 @app.route("/tag/<slug>")
 def tag_page(slug):
     clean = slugify(slug, max_len=80)
@@ -1642,6 +1757,7 @@ def image_detail(image_id, slug):
     ).fetchall()
     image_albums = get_albums_for_image(conn, image_id)
     related = related_photos(conn, row)
+    about = describe_photo(conn, row, image_albums, related)
     next_full_url = None
     prev_image = next_image = None
     if prev_id:
@@ -1666,6 +1782,7 @@ def image_detail(image_id, slug):
         image=row,
         image_albums=image_albums,
         related=related,
+        about=about,
         comments=comments,
         prev_id=prev_id,
         next_id=next_id,

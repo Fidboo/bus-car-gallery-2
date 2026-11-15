@@ -596,7 +596,7 @@ def test_back_link_returns_to_the_list_page_the_photo_is_on(appmod):
 
     # the same holds inside a search: position counts only the matching photos
     html = c.get("/category/bus?q=volvo&page=2").get_data(as_text=True)
-    on_page_two = [int(m) for m in re.findall(r"/image/(\d+)-[^?\"]*\?", html)]
+    on_page_two = [int(m) for m in re.findall(r'href="/image/(\d+)-[^"?]*" data-ctx="\?cat=bus&amp;q=volvo"', html)]
     assert on_page_two and all(back(i, "volvo") == "/category/bus?q=volvo&page=2" for i in on_page_two)
 
     # photos in an album have no pages: back goes to the album

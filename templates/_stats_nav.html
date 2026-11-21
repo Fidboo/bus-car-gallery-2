@@ -1,0 +1,4 @@
+<nav class="stats-tabs">
+    <a href="{{ url_for('stats') }}" class="{{ 'active' if active == 'overview' }}">Overview</a>
+    <a href="{{ url_for('stats_comments') }}" class="{{ 'active' if active == 'comments' }}">Comments{% if new_count %} <span class="badge">{{ new_count }} new</span>{% endif %}</a>
+</nav>

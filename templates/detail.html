@@ -265,7 +265,7 @@ document.addEventListener('keydown', function (e) {
     <h2>Comments ({{ comments|length }})</h2>
 
     {% for c in comments %}
-        <div class="comment">
+        <div class="comment" id="c{{ c['id'] }}">
             <div class="comment-name">{{ c['name'] }}</div>
             <div class="comment-text">{{ c['comment'] }}</div>
             <div class="comment-date">{{ c['created_at']|fmtdate }}</div>

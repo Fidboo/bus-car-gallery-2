@@ -1,0 +1,64 @@
+{% extends "base.html" %}
+{% block title %}Comments - Stats{% endblock %}
+{% block robots %}<meta name="robots" content="noindex, nofollow">{% endblock %}
+{% block content %}
+
+<h1>Stats</h1>
+{% set active = 'comments' %}{% include "_stats_nav.html" %}
+
+<form class="search-bar" method="get" action="{{ url_for('stats_comments') }}">
+    <input type="text" name="q" value="{{ query }}" placeholder="Search comments, names or photo titles">
+    <button type="submit">Search</button>
+    {% if query %}<a class="clear-link" href="{{ url_for('stats_comments') }}">Clear</a>{% endif %}
+</form>
+
+<p class="result-count">
+    {% if query %}{{ total }} of {{ all_count }} comment{{ 's' if all_count != 1 }} match "{{ query }}".
+    {% else %}{{ all_count }} comment{{ 's' if all_count != 1 }} in total{% if new_count %}, {{ new_count }} in the last 7 days{% endif %}. Newest first.{% endif %}
+</p>
+
+{% if comments %}
+<ul class="comment-list">
+    {% for c in comments %}
+    <li class="comment-row">
+        {% if c['photo_id'] %}
+        <a class="comment-thumb" href="{{ image_url({'id': c['photo_id'], 'title': c['title']}) }}#c{{ c['id'] }}">
+            <img src="{{ thumb_url(c['thumbnail'], c['filename']) }}" alt="{{ c['title'] }}" loading="lazy">
+        </a>
+        {% else %}
+        <span class="comment-thumb comment-thumb-empty"></span>
+        {% endif %}
+        <div class="comment-body">
+            <div class="comment-head">
+                <strong>{{ c['name'] }}</strong>
+                <span class="hint">{{ c['created_at']|fmtdate }}</span>
+                {% if c['created_at'] >= new_since %}<span class="badge">New</span>{% endif %}
+            </div>
+            <div class="comment-text">{{ c['comment'] }}</div>
+            <div class="comment-photo">
+                {% if c['photo_id'] %}on <a href="{{ image_url({'id': c['photo_id'], 'title': c['title']}) }}#c{{ c['id'] }}">{{ c['title'] }}</a>
+                {% else %}<span class="hint">The photo has been deleted.</span>{% endif %}
+            </div>
+        </div>
+        <form method="post" action="{{ url_for('delete_comment', comment_id=c['id']) }}"
+              onsubmit="return confirm('Delete this comment?');">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <input type="hidden" name="next" value="{{ here }}">
+            <button type="submit" class="danger small">Delete</button>
+        </form>
+    </li>
+    {% endfor %}
+</ul>
+{% else %}
+<div class="empty-state"><p>{{ 'No comments match your search.' if query else 'No comments yet.' }}</p></div>
+{% endif %}
+
+{% if pages > 1 %}
+<div class="pagination">
+    {% if page > 1 %}<a href="{{ url_for('stats_comments', q=(query or None), page=(page - 1 if page > 2 else None)) }}">Previous</a>{% endif %}
+    <span>Page {{ page }} of {{ pages }}</span>
+    {% if page < pages %}<a href="{{ url_for('stats_comments', q=(query or None), page=page + 1) }}">Next</a>{% endif %}
+</div>
+{% endif %}
+
+{% endblock %}

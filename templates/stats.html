@@ -1,5 +1,6 @@
 {% extends "base.html" %}
 {% block title %}Stats{% endblock %}
+{% block robots %}<meta name="robots" content="noindex, nofollow">{% endblock %}
 {% block content %}
 
 {% macro boxes(data, visits_word, labels) %}
@@ -67,29 +68,99 @@
 {% endmacro %}
 
 <h1>Stats</h1>
+{% set new_count = new_comments %}{% set active = 'overview' %}{% include "_stats_nav.html" %}
 
-<form class="cf-range" method="get" action="{{ url_for('stats') }}">
-    <span class="cf-range-label">Show:</span>
-    {% for d, label in cf_ranges %}
-        <a class="chip {{ 'chip-active' if cf_days == d }}" href="{{ url_for('stats', days=d) }}">{{ label }}</a>
-    {% endfor %}
-    <span class="cf-range-custom">
-        <input type="date" name="from" value="{{ cf_from }}" aria-label="From">
-        <span>to</span>
-        <input type="date" name="to" value="{{ cf_to }}" aria-label="To">
-        <button type="submit">Show</button>
-    </span>
-</form>
+{# ---- At a glance ---- #}
+<div class="stats-glance">
+    <div class="stat-box"><div class="stat-number">{{ real.day.visits }}</div><div class="stat-label">Visitors today</div></div>
+    <div class="stat-box"><div class="stat-number">{{ real.week.visits }}</div><div class="stat-label">Visitors, last 7 days</div></div>
+    <div class="stat-box"><div class="stat-number">{{ real.month.visits }}</div><div class="stat-label">Visitors, last 30 days</div></div>
+    <a class="stat-box stat-link" href="{{ url_for('stats_comments') }}">
+        <div class="stat-number">{{ new_comments }}</div><div class="stat-label">New comments, 7 days &rarr;</div>
+    </a>
+    <div class="stat-box"><div class="stat-number">{{ '{:,}'.format(total_images) }}</div><div class="stat-label">Photos</div></div>
+</div>
 
-<h2>Real visitors</h2>
-<p class="hint">Counted by this site. A page view only counts when a person actually uses the page (scrolls, moves the mouse, touches the screen or presses a key) in a normal browser, so bots and scrapers are left out. "Visitors" are different people per day.</p>
-{{ boxes(real, 'Visitors', ['Today', 'Last 7 days', 'Last 30 days']) }}
-{{ chart(real, 'Visitors') }}
-{{ lists(real, 'Visitors') }}
+{% if latest_comments %}
+<section class="stats-section">
+    <div class="section-head">
+        <h2>Latest comments</h2>
+        <a href="{{ url_for('stats_comments') }}">See all {{ total_comments }} &rarr;</a>
+    </div>
+    <ul class="comment-list compact">
+        {% for c in latest_comments %}
+        <li class="comment-row">
+            {% if c['photo_id'] %}
+            <a class="comment-thumb" href="{{ image_url({'id': c['photo_id'], 'title': c['title']}) }}#c{{ c['id'] }}">
+                <img src="{{ thumb_url(c['thumbnail'], c['filename']) }}" alt="{{ c['title'] }}" loading="lazy"></a>
+            {% else %}<span class="comment-thumb comment-thumb-empty"></span>{% endif %}
+            <div class="comment-body">
+                <div class="comment-head"><strong>{{ c['name'] }}</strong> <span class="hint">{{ c['created_at']|fmtdate }}</span>
+                    {% if c['created_at'] >= new_since %}<span class="badge">New</span>{% endif %}</div>
+                <div class="comment-text">{{ c['comment']|truncate(160) }}</div>
+                {% if c['photo_id'] %}<div class="comment-photo">on <a href="{{ image_url({'id': c['photo_id'], 'title': c['title']}) }}#c{{ c['id'] }}">{{ c['title'] }}</a></div>{% endif %}
+            </div>
+        </li>
+        {% endfor %}
+    </ul>
+</section>
+{% endif %}
 
+{# ---- Visitors ---- #}
+<section class="stats-section">
+    <div class="section-head"><h2>Visitors</h2></div>
+    <form class="cf-range" method="get" action="{{ url_for('stats') }}">
+        {% for d, label in cf_ranges %}
+            <a class="chip {{ 'chip-active' if cf_days == d }}" href="{{ url_for('stats', days=d) }}">{{ label }}</a>
+        {% endfor %}
+        <span class="cf-range-custom">
+            <input type="date" name="from" value="{{ cf_from }}" aria-label="From">
+            <span>to</span>
+            <input type="date" name="to" value="{{ cf_to }}" aria-label="To">
+            <button type="submit">Show</button>
+        </span>
+    </form>
+    {{ chart(real, 'Visitors') }}
+    {{ lists(real, 'Visitors') }}
+</section>
+
+{# ---- Photos ---- #}
+<section class="stats-section">
+    <div class="section-head"><h2>Photos</h2></div>
+    <div class="cf-columns">
+        <div>
+            <h3>Categories</h3>
+            <table class="stats-table">
+                <thead><tr><th>Category</th><th>Photos</th><th>Views</th></tr></thead>
+                <tbody>
+                {% for cat in per_category %}
+                <tr><td><a href="{{ url_for('category_view', slug=cat.slug) }}">{{ cat.label }}</a></td><td>{{ '{:,}'.format(cat.count) }}</td><td>{{ cat.views }}</td></tr>
+                {% endfor %}
+                </tbody>
+            </table>
+        </div>
+        <div>
+            <h3>Most viewed photos</h3>
+            <table class="stats-table">
+                <thead><tr><th>Photo</th><th>Views</th></tr></thead>
+                <tbody>
+                {% for image in top_images %}
+                <tr><td><a href="{{ image_url(image) }}">{{ image['title'] }}</a></td><td>{{ image['views'] }}</td></tr>
+                {% else %}
+                <tr><td colspan="2" class="hint">No views counted yet.</td></tr>
+                {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+</section>
+
+{# ---- Technical details, folded away ---- #}
 <details class="stats-compare">
-    <summary><h3>Filtered out as bots: {{ real.filtered_total }} page views ({{ period_label }})</h3></summary>
-    <p class="hint">Requests that were NOT counted above, and why. Kept for 30 days.</p>
+    <summary><h2>Technical details</h2></summary>
+    <p class="hint">How visitors are counted: a page view only counts when a person actually uses the page (scrolls, moves the mouse, touches the screen or presses a key) for at least 10 seconds in a normal browser. "Visitors" are different people per day. Page views since the last reset: {{ total_visits }}.</p>
+
+    <h3>Filtered out as bots: {{ real.filtered_total }} page views ({{ period_label }})</h3>
     <div class="cf-columns">
         <table class="stats-table">
             <thead><tr><th>Reason</th><th>Page views</th></tr></thead>
@@ -105,10 +176,8 @@
             </tbody>
         </table>
     </div>
-</details>
 
-<details class="stats-compare" {{ 'open' if not (cf and cf.ok) and cf_configured }}>
-    <summary><h2>For comparison: Cloudflare Web Analytics</h2></summary>
+    <h3>For comparison: Cloudflare Web Analytics</h3>
     <p class="hint">Cloudflare counts every browser that runs its script, including bots that use a real browser, so these numbers are usually higher.</p>
     {% if cf and cf.ok %}
         {{ boxes(cf, 'Visits', ['Last 24 hours', 'Last 7 days', 'Last 30 days']) }}
@@ -120,56 +189,5 @@
         <p class="hint">Cloudflare numbers are not set up yet (needs CF_API_TOKEN and CF_ACCOUNT_ID).</p>
     {% endif %}
 </details>
-
-<h2>Photos</h2>
-<div class="stats-summary">
-    <div class="stat-box">
-        <div class="stat-number">{{ total_visits }}</div>
-        <div class="stat-label">Page views since the last reset</div>
-    </div>
-    <div class="stat-box">
-        <div class="stat-number">{{ total_images }}</div>
-        <div class="stat-label">Total photos</div>
-    </div>
-    <div class="stat-box">
-        <div class="stat-number">{{ total_comments }}</div>
-        <div class="stat-label">Total comments</div>
-    </div>
-</div>
-
-<h3>Categories</h3>
-<table class="stats-table">
-    <thead>
-        <tr><th>Category</th><th>Photos</th><th>Views</th></tr>
-    </thead>
-    <tbody>
-        {% for cat in per_category %}
-        <tr>
-            <td>{{ cat.label }}</td>
-            <td>{{ cat.count }}</td>
-            <td>{{ cat.views }}</td>
-        </tr>
-        {% endfor %}
-    </tbody>
-</table>
-
-<h3>Most viewed photos (since the last reset)</h3>
-{% if top_images %}
-<table class="stats-table">
-    <thead>
-        <tr><th>Photo</th><th>Views</th></tr>
-    </thead>
-    <tbody>
-        {% for image in top_images %}
-        <tr>
-            <td><a href="{{ image_url(image) }}">{{ image['title'] }}</a></td>
-            <td>{{ image['views'] }}</td>
-        </tr>
-        {% endfor %}
-    </tbody>
-</table>
-{% else %}
-<p class="hint">No photos yet.</p>
-{% endif %}
 
 {% endblock %}

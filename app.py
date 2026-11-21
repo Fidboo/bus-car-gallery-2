@@ -1843,6 +1843,9 @@ def delete_comment(comment_id):
     conn.commit()
     conn.close()
     flash("Comment deleted.")
+    back = request.form.get("next", "")
+    if back.startswith("/stats/comments") and "//" not in back:     # only back to our own list
+        return redirect(back)
     return redirect(url_for("image_detail", image_id=row["image_id"]) + "#comments")
 
 
@@ -2622,7 +2625,7 @@ def stats():
     total_visits = visits_row["value"] if visits_row else 0
 
     top_images = conn.execute(
-        "SELECT * FROM images ORDER BY views DESC, id DESC LIMIT 20"
+        "SELECT * FROM images WHERE views > 0 ORDER BY views DESC, id DESC LIMIT 10"
     ).fetchall()
 
     per_category = []
@@ -2637,6 +2640,11 @@ def stats():
 
     total_images = conn.execute("SELECT COUNT(*) FROM images").fetchone()[0]
     total_comments = conn.execute("SELECT COUNT(*) FROM comments").fetchone()[0]
+    new_comments = conn.execute("SELECT COUNT(*) FROM comments WHERE created_at >= ?",
+                                (comments_new_since(),)).fetchone()[0]
+    latest_comments = conn.execute(
+        f"SELECT {COMMENT_FIELDS} FROM comments c LEFT JOIN images i ON i.id = c.image_id "
+        "ORDER BY c.created_at DESC, c.id DESC LIMIT 3").fetchall()
     start, end, days, from_txt, to_txt, period_label = stats_period(request.args)
     real = real_visitor_stats(conn, start, end)
     cf = fetch_cloudflare_stats(start, end)
@@ -2658,7 +2666,52 @@ def stats():
         per_category=per_category,
         total_images=total_images,
         total_comments=total_comments,
+        new_comments=new_comments,
+        latest_comments=latest_comments,
+        new_since=comments_new_since(),
     )
+
+
+# ---------------------------------------------------------------------------
+# Stats: every comment on the site in one list (newest first), with the photo
+# it was written on, so a comment can be found among thousands of photos.
+# ---------------------------------------------------------------------------
+COMMENTS_PER_PAGE = 30
+COMMENT_FIELDS = ("c.id, c.image_id, c.name, c.comment, c.created_at, "
+                  "i.id AS photo_id, i.title, i.filename, i.thumbnail, i.category")
+
+
+def comments_new_since(days=7):
+    from datetime import timedelta
+    return (datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(days=days)).isoformat()
+
+
+@app.route("/stats/comments")
+@login_required
+def stats_comments():
+    query = " ".join(request.args.get("q", "").split())[:100]
+    page = max(1, request.args.get("page", 1, type=int))
+    where, params = "1", []
+    for word in query.lower().split()[:6]:
+        like = "%" + word.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
+        where += (" AND (lower(c.name) LIKE ? ESCAPE '\\' OR lower(c.comment) LIKE ? ESCAPE '\\'"
+                  " OR lower(COALESCE(i.title, '')) LIKE ? ESCAPE '\\')")
+        params += [like, like, like]
+    conn = get_db()
+    total = conn.execute(f"SELECT COUNT(*) FROM comments c LEFT JOIN images i ON i.id = c.image_id WHERE {where}",
+                         params).fetchone()[0]
+    pages = max(1, (total + COMMENTS_PER_PAGE - 1) // COMMENTS_PER_PAGE)
+    page = min(page, pages)
+    rows = conn.execute(
+        f"SELECT {COMMENT_FIELDS} FROM comments c LEFT JOIN images i ON i.id = c.image_id WHERE {where} "
+        "ORDER BY c.created_at DESC, c.id DESC LIMIT ? OFFSET ?", (*params, COMMENTS_PER_PAGE, (page - 1) * COMMENTS_PER_PAGE)).fetchall()
+    all_count = conn.execute("SELECT COUNT(*) FROM comments").fetchone()[0]
+    new_count = conn.execute("SELECT COUNT(*) FROM comments WHERE created_at >= ?",
+                             (comments_new_since(),)).fetchone()[0]
+    conn.close()
+    return render_template("stats_comments.html", comments=rows, total=total, all_count=all_count,
+                           new_count=new_count, page=page, pages=pages, query=query,
+                           new_since=comments_new_since(), here=request.full_path.rstrip("?"))
 
 
 def warm_tag_index():

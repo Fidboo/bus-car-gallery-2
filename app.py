@@ -803,13 +803,17 @@ def build_filters(category=None, album_id=None, query=None):
     return " AND ".join(where), params
 
 
+_context_totals = {}
+
+
 def get_neighbors(conn, image_id, category=None, album_id=None, query=None):
     """Previous/next photo and 'n of total' within the current browsing
     context (newest first). Uses small indexed queries instead of loading
     every id in the category - essential with tens of thousands of photos.
     Returns (prev_id, next_id, position, total)."""
     where, params = build_filters(category, album_id, query)
-    base = f"{IMAGES_FROM} WHERE {where}"
+    # The albums join is only needed when the filter looks at album names.
+    base = f"{IMAGES_FROM if 'albums.' in where else 'FROM images'} WHERE {where}"
 
     in_context = conn.execute(
         f"SELECT 1 {base} AND images.id = ?", params + [image_id]
@@ -817,7 +821,17 @@ def get_neighbors(conn, image_id, category=None, album_id=None, query=None):
     if in_context is None:
         return None, None, 1, 1
 
-    total = conn.execute(f"SELECT COUNT(*) {base}", params).fetchone()[0]
+    # "n of TOTAL": the total of a category is the same for every photo in it,
+    # so it is counted once a minute instead of on every page view.
+    key = (where, tuple(params))
+    hit = _context_totals.get(key)
+    if hit and hit[0] > time.time():
+        total = hit[1]
+    else:
+        total = conn.execute(f"SELECT COUNT(*) {base}", params).fetchone()[0]
+        if len(_context_totals) > 500:
+            _context_totals.clear()
+        _context_totals[key] = (time.time() + 60, total)
     newer = conn.execute(
         f"SELECT COUNT(*) {base} AND images.id > ?", params + [image_id]
     ).fetchone()[0]
@@ -1535,16 +1549,39 @@ def all_topics(conn, min_photos=MIN_TOPIC_PHOTOS):
     return topics
 
 
+# How many photos of a category have a tag. Counting a broad tag ("bus",
+# "denmark") means reading tens of thousands of rows, and every photo page
+# needs a few such counts - on the small shared CPU that added up and slowed
+# the whole site when crawlers walked through the photo pages. So each count
+# is worked out once and kept: until photos are re-tagged/uploaded (the tag
+# index version changes) and at most an hour.
+_tag_count_cache = {"version": None, "until": 0, "data": {}}
+TAG_COUNT_CACHE_SECONDS = 3600
+TAG_COUNT_CACHE_MAX = 30000
+
+
+def tag_count_in_category(conn, slug, category):
+    cache = _tag_count_cache
+    now = time.time()
+    if cache["version"] != _tag_cache_version[0] or now > cache["until"] or len(cache["data"]) > TAG_COUNT_CACHE_MAX:
+        cache.update(version=_tag_cache_version[0], until=now + TAG_COUNT_CACHE_SECONDS, data={})
+    key = (slug, category)
+    n = cache["data"].get(key)
+    if n is None:
+        n = conn.execute("SELECT COUNT(*) FROM image_tags x JOIN images j ON j.id = x.image_id "
+                         "WHERE x.slug = ? AND j.category = ?", key).fetchone()[0]
+        cache["data"][key] = n
+    return n
+
+
 def related_photos(conn, image):
     """Up to two 'more photos of ...' rows for a photo page: photos in the SAME
     category (a car page shows cars) sharing its most specific tags (fewest
     photos, but at least one other photo)."""
     refresh_tag_index(conn)
     category = image["category"]
-    tags = conn.execute(
-        "SELECT t.slug, t.tag, (SELECT COUNT(*) FROM image_tags x JOIN images j ON j.id = x.image_id "
-        "                       WHERE x.slug = t.slug AND j.category = ?) AS n "
-        "FROM image_tags t WHERE t.image_id = ?", (category, image["id"])).fetchall()
+    tags = [{"slug": r["slug"], "tag": r["tag"], "n": tag_count_in_category(conn, r["slug"], category)}
+            for r in conn.execute("SELECT slug, tag FROM image_tags WHERE image_id = ?", (image["id"],))]
     usable = sorted([t for t in tags if 2 <= t["n"] <= RELATED_MAX_TOPIC_SIZE], key=lambda t: (t["n"], t["slug"]))
     if not usable:
         usable = sorted([t for t in tags if t["n"] >= 2], key=lambda t: t["n"])[:1]

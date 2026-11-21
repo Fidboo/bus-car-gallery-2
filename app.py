@@ -443,7 +443,29 @@ def refresh_tag_index(conn):
 _topic_cache = {}
 
 
-init_db()
+def log_disk_space():
+    """Say in the log how full the data volume is - a full volume stops the
+    database (and so the whole site) from working."""
+    try:
+        import shutil
+        u = shutil.disk_usage(DATA_DIR)
+        pct = u.used * 100 / u.total
+        msg = "Data volume %s: %.0f%% full (%.0f MB free of %.0f MB)" % (
+            DATA_DIR, pct, u.free / 1e6, u.total / 1e6)
+        (app.logger.error if pct >= 90 else app.logger.info)(
+            msg + (" - FREE UP SPACE, the site stops working when it is full" if pct >= 90 else ""))
+    except Exception:
+        pass
+
+
+log_disk_space()
+try:
+    init_db()
+except Exception:
+    # Never let the database set-up stop the website from starting (e.g. a
+    # full disk: "database or disk is full"). Pages that only read keep
+    # working; the error is in the log so the cause can be fixed.
+    app.logger.exception("Database set-up at start-up failed - starting anyway")
 
 # Daily automatic copy of the database to R2 (on by default in production,
 # set AUTO_BACKUP=0 to turn it off).

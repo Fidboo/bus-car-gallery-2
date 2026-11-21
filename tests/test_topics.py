@@ -131,3 +131,4 @@ def test_related_photos_stay_in_the_same_category(appmod):
     whole = client.get("/tag/volvo").get_data(as_text=True)
     assert "Volvo bus 0" in whole and "noindex" not in whole
     assert client.get("/tag/volvo?cat=nonsense").status_code == 302
+
